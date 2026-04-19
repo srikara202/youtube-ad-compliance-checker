@@ -21,15 +21,36 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Assert-AzureCli {
-    if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+    $pythonCli = "C:\Program Files\Microsoft SDKs\Azure\CLI2\python.exe"
+    if (Test-Path $pythonCli) {
+        $script:AzCliExecutable = $pythonCli
+        $script:AzCliPrefixArgs = @("-m", "azure.cli")
+        return
+    }
+
+    $azCommand = Get-Command az -ErrorAction SilentlyContinue
+    if (-not $azCommand) {
         throw "Azure CLI is required. Install Azure CLI and run 'az login' before using this script."
     }
+
+    $script:AzCliExecutable = $azCommand.Source
+    $script:AzCliPrefixArgs = @()
+}
+
+function Invoke-Az {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+
+    $result = & $script:AzCliExecutable @script:AzCliPrefixArgs @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Azure CLI command failed: az $($Arguments -join ' ')"
+    }
+    return $result
 }
 
 Assert-AzureCli
 
-$tenantId = az account show --subscription $SubscriptionId --query tenantId --output tsv
-$existingAppId = az ad app list --display-name $EntraAppName --query "[0].appId" --output tsv
+$tenantId = Invoke-Az account show --subscription $SubscriptionId --query tenantId --output tsv
+$existingAppId = Invoke-Az ad app list --display-name $EntraAppName --query "[0].appId" --output tsv
 
 if ($existingAppId) {
     $appId = $existingAppId
@@ -37,18 +58,23 @@ if ($existingAppId) {
 }
 else {
     Write-Host "Creating Microsoft Entra app '$EntraAppName'..."
-    $appId = az ad app create --display-name $EntraAppName --query appId --output tsv
+    $appId = Invoke-Az ad app create --display-name $EntraAppName --query appId --output tsv
 }
 
-$spObjectId = az ad sp show --id $appId --query id --output tsv 2>$null
+try {
+    $spObjectId = Invoke-Az ad sp show --id $appId --query id --output tsv 2>$null
+}
+catch {
+    $spObjectId = ""
+}
 if (-not $spObjectId) {
     Write-Host "Creating service principal..."
-    az ad sp create --id $appId --output none
-    $spObjectId = az ad sp show --id $appId --query id --output tsv
+    Invoke-Az ad sp create --id $appId --output none
+    $spObjectId = Invoke-Az ad sp show --id $appId --query id --output tsv
 }
 
 $scope = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
-$roleExists = az role assignment list `
+$roleExists = Invoke-Az role assignment list `
     --assignee-object-id $spObjectId `
     --scope $scope `
     --query "[?roleDefinitionName=='Contributor'] | length(@)" `
@@ -56,7 +82,7 @@ $roleExists = az role assignment list `
 
 if ($roleExists -eq "0") {
     Write-Host "Assigning Contributor on resource group '$ResourceGroupName'..."
-    az role assignment create `
+    Invoke-Az role assignment create `
         --assignee-object-id $spObjectId `
         --assignee-principal-type ServicePrincipal `
         --role Contributor `
@@ -65,7 +91,7 @@ if ($roleExists -eq "0") {
 }
 
 $subject = "repo:$RepoOwner/$RepoName:ref:refs/heads/$Branch"
-$existingCredential = az ad app federated-credential list --id $appId `
+$existingCredential = Invoke-Az ad app federated-credential list --id $appId `
     --query "[?subject=='$subject'] | length(@)" `
     --output tsv
 
@@ -81,7 +107,7 @@ if ($existingCredential -eq "0") {
     Set-Content -Path $credentialFile -Value $credentialPayload -Encoding UTF8
 
     Write-Host "Creating federated credential for branch '$Branch'..."
-    az ad app federated-credential create `
+    Invoke-Az ad app federated-credential create `
         --id $appId `
         --parameters $credentialFile `
         --output none
