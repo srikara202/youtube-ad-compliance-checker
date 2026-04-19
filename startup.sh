@@ -2,7 +2,8 @@
 set -eu
 
 cd /home/site/wwwroot
-export PYTHONPATH="${PYTHONPATH:-/home/site/wwwroot}"
+PACKAGE_PATH="/home/site/wwwroot/.python_packages/lib/site-packages"
+export PYTHONPATH="${PACKAGE_PATH}:/home/site/wwwroot${PYTHONPATH:+:${PYTHONPATH}}"
 
 exec gunicorn \
   --bind "0.0.0.0:${PORT:-8000}" \

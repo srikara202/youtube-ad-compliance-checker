@@ -15,6 +15,7 @@ param(
     [string]$WebAppName,
 
     [string]$Branch = "main",
+    [string]$EnvironmentName = "production",
     [string]$EntraAppName = "github-actions-youtube-ad-compliance-checker"
 )
 
@@ -90,29 +91,47 @@ if ($roleExists -eq "0") {
         --output none
 }
 
-$subject = "repo:$RepoOwner/$RepoName:ref:refs/heads/$Branch"
-$existingCredential = Invoke-Az ad app federated-credential list --id $appId `
-    --query "[?subject=='$subject'] | length(@)" `
-    --output tsv
+$credentials = @(
+    @{
+        Name = "github-branch-$Branch"
+        Subject = "repo:{0}/{1}:ref:refs/heads/{2}" -f $RepoOwner, $RepoName, $Branch
+        Description = "branch '$Branch'"
+    }
+)
 
-if ($existingCredential -eq "0") {
-    $credentialPayload = @{
-        name = "github-$Branch"
-        issuer = "https://token.actions.githubusercontent.com"
-        subject = $subject
-        audiences = @("api://AzureADTokenExchange")
-    } | ConvertTo-Json -Depth 4
+if ($EnvironmentName) {
+    $credentials += @{
+        Name = "github-environment-$EnvironmentName"
+        Subject = "repo:{0}/{1}:environment:{2}" -f $RepoOwner, $RepoName, $EnvironmentName
+        Description = "environment '$EnvironmentName'"
+    }
+}
 
-    $credentialFile = Join-Path $env:TEMP "github-federated-credential.json"
-    Set-Content -Path $credentialFile -Value $credentialPayload -Encoding UTF8
+foreach ($credential in $credentials) {
+    $subject = $credential.Subject
+    $existingCredential = Invoke-Az ad app federated-credential list --id $appId `
+        --query "[?subject=='$subject'] | length(@)" `
+        --output tsv
 
-    Write-Host "Creating federated credential for branch '$Branch'..."
-    Invoke-Az ad app federated-credential create `
-        --id $appId `
-        --parameters $credentialFile `
-        --output none
+    if ($existingCredential -eq "0") {
+        $credentialPayload = @{
+            name = $credential.Name
+            issuer = "https://token.actions.githubusercontent.com"
+            subject = $credential.Subject
+            audiences = @("api://AzureADTokenExchange")
+        } | ConvertTo-Json -Depth 4
 
-    Remove-Item $credentialFile -ErrorAction SilentlyContinue
+        $credentialFile = Join-Path $env:TEMP "github-federated-credential.json"
+        Set-Content -Path $credentialFile -Value $credentialPayload -Encoding UTF8
+
+        Write-Host "Creating federated credential for $($credential.Description)..."
+        Invoke-Az ad app federated-credential create `
+            --id $appId `
+            --parameters $credentialFile `
+            --output none
+
+        Remove-Item $credentialFile -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Host ""
