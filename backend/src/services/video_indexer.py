@@ -17,6 +17,20 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 logger = logging.getLogger("video-indexer")
+YOUTUBE_OEMBED_URL = "https://www.youtube.com/oembed"
+YOUTUBE_AUTH_CHALLENGE_MARKERS = (
+    "sign in to confirm you're not a bot",
+    "sign in to confirm you\u2019re not a bot",
+    "--cookies-from-browser",
+    "--cookies",
+    "authentication",
+    "captcha",
+    "login required",
+)
+YOUTUBE_DOWNLOAD_BLOCKED_MESSAGE = (
+    "YouTube blocked the Azure server while downloading this video. "
+    "The preview can still load, but the full audit cannot continue from this App Service for this video."
+)
 
 
 def normalize_youtube_url(url: str) -> tuple[str, str]:
@@ -91,6 +105,39 @@ def _build_youtube_ydl_options(download: bool, output_path: str | None = None) -
     return options
 
 
+def _build_youtube_thumbnail_url(video_id: str) -> str:
+    return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
+
+def _is_youtube_auth_challenge_error(error: Exception | str) -> bool:
+    error_text = str(error).lower()
+    return any(marker in error_text for marker in YOUTUBE_AUTH_CHALLENGE_MARKERS)
+
+
+def _fetch_youtube_oembed_metadata(canonical_url: str, video_id: str) -> dict:
+    response = requests.get(
+        YOUTUBE_OEMBED_URL,
+        params={"url": canonical_url, "format": "json"},
+        timeout=10,
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    title = (data.get("title") or "").strip()
+    thumbnail_url = (data.get("thumbnail_url") or "").strip() or _build_youtube_thumbnail_url(
+        video_id
+    )
+    if not title:
+        raise ValueError("Missing title in oEmbed response.")
+
+    return {
+        "video_url": canonical_url,
+        "youtube_video_id": video_id,
+        "title": title,
+        "thumbnail_url": thumbnail_url,
+    }
+
+
 def extract_youtube_metadata(url: str) -> dict:
     """
     Fetches YouTube metadata without downloading the video.
@@ -99,9 +146,19 @@ def extract_youtube_metadata(url: str) -> dict:
     logger.info("Fetching YouTube metadata for %s", canonical_url)
 
     try:
+        return _fetch_youtube_oembed_metadata(canonical_url, youtube_video_id)
+    except Exception as exc:
+        logger.warning("oEmbed metadata lookup failed for %s: %s", canonical_url, exc)
+
+    try:
         with yt_dlp.YoutubeDL(_build_youtube_ydl_options(download=False)) as ydl:
             info = ydl.extract_info(canonical_url, download=False)
     except Exception as exc:
+        if _is_youtube_auth_challenge_error(exc):
+            raise ValueError(
+                "Could not fetch YouTube metadata from the Azure server because YouTube "
+                "requested additional bot verification for this video."
+            ) from exc
         raise ValueError(f"Could not fetch YouTube metadata: {exc}") from exc
 
     thumbnails = info.get("thumbnails") or []
@@ -182,6 +239,8 @@ class VideoIndexerService:
             logger.info("Download Complete")
             return output_path
         except Exception as exc:
+            if _is_youtube_auth_challenge_error(exc):
+                raise Exception(YOUTUBE_DOWNLOAD_BLOCKED_MESSAGE) from exc
             raise Exception(f"Youtube Video Download Failed : {str(exc)}") from exc
 
     def upload_video(self, video_path, video_name):
