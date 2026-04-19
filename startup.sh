@@ -2,7 +2,7 @@
 set -eu
 
 cd /home/site/wwwroot
-PACKAGE_PATH="/home/site/wwwroot/.python_packages/lib/site-packages"
+PACKAGE_PATH="/home/site/wwwroot/python_packages/lib/site-packages"
 export PYTHONPATH="${PACKAGE_PATH}:/home/site/wwwroot${PYTHONPATH:+:${PYTHONPATH}}"
 
 exec gunicorn \

@@ -49,8 +49,8 @@ jobs:
       - name: Vendor Python packages for App Service
         if: github.event_name == 'push'
         run: |
-          mkdir -p .python_packages/lib/site-packages
-          pip install --target .python_packages/lib/site-packages -r requirements.txt
+          mkdir -p python_packages/lib/site-packages
+          pip install --target python_packages/lib/site-packages -r requirements.txt
 
       - name: Upload deployment package
         if: github.event_name == 'push'
