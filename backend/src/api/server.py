@@ -1,11 +1,13 @@
 import logging
 import os
 import uuid
+from pathlib import Path
 from typing import List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.src.api.audit_jobs import (
@@ -27,6 +29,10 @@ setup_telemetry()
 logging.basicConfig(level=logging.INFO)
 
 logger = logging.getLogger("api-server")
+REPO_ROOT = Path(__file__).resolve().parents[3]
+FRONTEND_DIST_DIR = Path(
+    os.getenv("FRONTEND_DIST_DIR", str(REPO_ROOT / "frontend" / "dist"))
+).expanduser()
 
 
 def get_frontend_origins() -> list[str]:
@@ -150,9 +156,46 @@ async def get_video_audit(audit_id: str):
     return AuditJobResponse.model_validate(job)
 
 
+def resolve_frontend_asset(full_path: str) -> Path | None:
+    dist_dir = FRONTEND_DIST_DIR.resolve()
+    if not dist_dir.is_dir():
+        return None
+
+    index_file = dist_dir / "index.html"
+    requested_path = (full_path or "").lstrip("/")
+    if not requested_path:
+        return index_file if index_file.is_file() else None
+
+    candidate = (dist_dir / requested_path).resolve()
+    try:
+        candidate.relative_to(dist_dir)
+    except ValueError:
+        return None
+
+    if candidate.is_file():
+        return candidate
+
+    if requested_path.startswith("assets/") or Path(requested_path).suffix:
+        return None
+
+    return index_file if index_file.is_file() else None
+
+
 @app.get("/health")
 def health_check():
     """
     Endpoint to verify API is working or not.
     """
     return {"status": "healthy", "service": "Youtube Add Compliance Checker"}
+
+
+@app.get("/", include_in_schema=False)
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_frontend(full_path: str = ""):
+    """
+    Serves the built React app when frontend assets are available.
+    """
+    frontend_asset = resolve_frontend_asset(full_path)
+    if frontend_asset is None:
+        raise HTTPException(status_code=404, detail="Frontend application is not built.")
+    return FileResponse(frontend_asset)

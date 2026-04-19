@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -32,6 +32,14 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+function setVideoUrl(value: string) {
+  fireEvent.change(screen.getByLabelText(/youtube url/i), {
+    target: {
+      value
+    }
+  });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -43,9 +51,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderApp();
-    const user = userEvent.setup();
-
-    await user.type(screen.getByLabelText(/youtube url/i), "https://example.com/ad");
+    setVideoUrl("https://example.com/ad");
 
     expect(screen.getByText(/use a youtube watch, short, embed, or share link/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /run audit/i })).toBeDisabled();
@@ -103,7 +109,7 @@ describe("App", () => {
     renderApp();
     const user = userEvent.setup();
 
-    await user.type(screen.getByLabelText(/youtube url/i), "https://youtu.be/abc123xyz45");
+    setVideoUrl("https://youtu.be/abc123xyz45");
     await user.click(screen.getByRole("button", { name: /run audit/i }));
 
     expect(await screen.findByText("Acme Spring Promo")).toBeInTheDocument();
@@ -158,7 +164,7 @@ describe("App", () => {
     renderApp();
     const user = userEvent.setup();
 
-    await user.type(screen.getByLabelText(/youtube url/i), "https://youtu.be/abc123xyz45");
+    setVideoUrl("https://youtu.be/abc123xyz45");
     await user.click(screen.getByRole("button", { name: /run audit/i }));
 
     expect(await screen.findByText(/video indexing failed in azure/i)).toBeInTheDocument();

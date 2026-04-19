@@ -1,9 +1,11 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from backend.src.api.server import app
+from backend.src.api import server
 
 
 def build_job(job_status="QUEUED", result=None, error=None):
@@ -26,7 +28,7 @@ def build_job(job_status="QUEUED", result=None, error=None):
 class ApiServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.client = TestClient(app)
+        cls.client = TestClient(server.app)
 
     def test_create_audit_returns_preview_and_job_id(self):
         created_job = build_job()
@@ -154,3 +156,31 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(payload["final_report"], "Audit summary")
         self.assertEqual(payload["compliance_results"][0]["severity"], "WARNING")
         audit_mock.assert_called_once()
+
+    def test_root_serves_built_frontend_index_when_available(self):
+        with TemporaryDirectory() as temp_dir:
+            dist_dir = Path(temp_dir)
+            (dist_dir / "index.html").write_text(
+                "<html><body>Frontend shell</body></html>",
+                encoding="utf-8",
+            )
+
+            with patch.object(server, "FRONTEND_DIST_DIR", dist_dir):
+                response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Frontend shell", response.text)
+
+    def test_client_side_routes_fallback_to_index(self):
+        with TemporaryDirectory() as temp_dir:
+            dist_dir = Path(temp_dir)
+            (dist_dir / "index.html").write_text(
+                "<html><body>Client route shell</body></html>",
+                encoding="utf-8",
+            )
+
+            with patch.object(server, "FRONTEND_DIST_DIR", dist_dir):
+                response = self.client.get("/review/session-123")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Client route shell", response.text)
