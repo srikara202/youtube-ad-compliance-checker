@@ -49,8 +49,16 @@ jobs:
       - name: Vendor Python packages for App Service
         if: github.event_name == 'push'
         run: |
-          mkdir -p python_packages/lib/site-packages
-          pip install --target python_packages/lib/site-packages -r requirements.txt
+          docker run --rm \
+            --volume "$PWD:/app" \
+            --workdir /app \
+            python:3.12-bullseye \
+            bash -lc '
+              python -m pip install --upgrade pip &&
+              rm -rf python_packages &&
+              mkdir -p python_packages/lib/site-packages &&
+              pip install --target python_packages/lib/site-packages -r requirements.txt
+            '
 
       - name: Upload deployment package
         if: github.event_name == 'push'
