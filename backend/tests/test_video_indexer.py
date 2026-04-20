@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -61,6 +63,79 @@ class VideoIndexerMetadataTests(unittest.TestCase):
 
 
 class VideoIndexerDownloadTests(unittest.TestCase):
+    def test_resolve_youtube_stream_url_selects_progressive_http_format(self):
+        ydl = MagicMock()
+        ydl.extract_info.return_value = {
+            "formats": [
+                {
+                    "format_id": "137",
+                    "ext": "mp4",
+                    "protocol": "https",
+                    "acodec": "none",
+                    "vcodec": "avc1.640028",
+                    "url": "https://example.com/video-only.mp4",
+                    "height": 1080,
+                },
+                {
+                    "format_id": "18",
+                    "ext": "mp4",
+                    "protocol": "https",
+                    "acodec": "mp4a.40.2",
+                    "vcodec": "avc1.42001E",
+                    "url": "https://example.com/progressive.mp4",
+                    "height": 360,
+                },
+            ]
+        }
+        ydl_context = MagicMock()
+        ydl_context.__enter__.return_value = ydl
+        ydl_context.__exit__.return_value = False
+
+        service = VideoIndexerService()
+
+        with patch(
+            "backend.src.services.video_indexer.yt_dlp.YoutubeDL",
+            return_value=ydl_context,
+        ):
+            stream_url, extension = service.resolve_youtube_stream_url(
+                "https://youtu.be/abc123xyz45"
+            )
+
+        self.assertEqual(stream_url, "https://example.com/progressive.mp4")
+        self.assertEqual(extension, "mp4")
+        ydl.extract_info.assert_called_once()
+
+    def test_download_youtube_video_prefers_direct_stream_download(self):
+        service = VideoIndexerService()
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.raise_for_status.return_value = None
+        response.iter_content.return_value = [b"abc", b"123"]
+
+        with TemporaryDirectory() as temp_dir, patch.object(
+            service,
+            "resolve_youtube_stream_url",
+            return_value=("https://example.com/progressive.mp4", "mp4"),
+        ) as resolve_mock, patch(
+            "backend.src.services.video_indexer.requests.get",
+            return_value=response,
+        ) as request_mock, patch(
+            "backend.src.services.video_indexer.yt_dlp.YoutubeDL"
+        ) as ydl_mock:
+            output_path = Path(temp_dir) / "video.mp4"
+            saved_path = service.download_youtube_video(
+                "https://youtu.be/abc123xyz45",
+                output_path=str(output_path),
+            )
+
+            self.assertEqual(saved_path, str(output_path))
+            self.assertEqual(output_path.read_bytes(), b"abc123")
+
+        resolve_mock.assert_called_once()
+        request_mock.assert_called_once()
+        ydl_mock.assert_not_called()
+
     def test_download_youtube_video_returns_clear_error_for_bot_challenge(self):
         ydl = MagicMock()
         ydl.download.side_effect = Exception(

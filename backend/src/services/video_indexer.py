@@ -31,6 +31,12 @@ YOUTUBE_DOWNLOAD_BLOCKED_MESSAGE = (
     "YouTube blocked the Azure server while downloading this video. "
     "The preview can still load, but the full audit cannot continue from this App Service for this video."
 )
+DEFAULT_MEDIA_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36"
+    )
+}
 
 
 def normalize_youtube_url(url: str) -> tuple[str, str]:
@@ -79,12 +85,7 @@ def _build_youtube_ydl_options(download: bool, output_path: str | None = None) -
         "noprogress": True,
         "noplaylist": True,
         "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36"
-            )
-        },
+        "http_headers": DEFAULT_MEDIA_REQUEST_HEADERS,
     }
 
     if download:
@@ -123,6 +124,37 @@ def _build_display_title(source_name: str, fallback: str) -> str:
 def _is_youtube_auth_challenge_error(error: Exception | str) -> bool:
     error_text = str(error).lower()
     return any(marker in error_text for marker in YOUTUBE_AUTH_CHALLENGE_MARKERS)
+
+
+def _is_direct_http_media_format(
+    fmt: dict,
+    *,
+    require_audio: bool = True,
+    require_video: bool = True,
+) -> bool:
+    if not fmt.get("url"):
+        return False
+
+    protocol = (fmt.get("protocol") or "").split("+")[0]
+    if protocol not in {"http", "https"}:
+        return False
+
+    if require_audio and fmt.get("acodec") in {None, "none"}:
+        return False
+
+    if require_video and fmt.get("vcodec") in {None, "none"}:
+        return False
+
+    return True
+
+
+def _youtube_format_sort_key(fmt: dict) -> tuple[int, int, int, int]:
+    return (
+        1 if (fmt.get("ext") or "").lower() == "mp4" else 0,
+        fmt.get("height") or 0,
+        int(fmt.get("tbr") or 0),
+        int(fmt.get("filesize") or fmt.get("filesize_approx") or 0),
+    )
 
 
 def normalize_media_source_url(url: str) -> str:
@@ -294,12 +326,96 @@ class VideoIndexerService:
             raise Exception(f"Azure upload succeeded but no video id was returned : {response.text}")
         return video_id
 
+    def resolve_youtube_stream_url(self, url: str) -> tuple[str, str]:
+        _, canonical_url = normalize_youtube_url(url)
+        logger.info("Resolving direct YouTube media stream for %s", canonical_url)
+
+        try:
+            with yt_dlp.YoutubeDL(_build_youtube_ydl_options(download=False)) as ydl:
+                info = ydl.extract_info(canonical_url, download=False)
+        except Exception as exc:
+            if _is_youtube_auth_challenge_error(exc):
+                raise Exception(YOUTUBE_DOWNLOAD_BLOCKED_MESSAGE) from exc
+            raise Exception(f"Could not resolve a downloadable YouTube stream : {str(exc)}") from exc
+
+        formats = info.get("formats") or []
+        progressive_candidates = sorted(
+            [
+                fmt
+                for fmt in formats
+                if _is_direct_http_media_format(fmt, require_audio=True, require_video=True)
+            ],
+            key=_youtube_format_sort_key,
+            reverse=True,
+        )
+
+        if not progressive_candidates and _is_direct_http_media_format(
+            info,
+            require_audio=True,
+            require_video=True,
+        ):
+            progressive_candidates = [info]
+
+        if not progressive_candidates:
+            raise Exception(
+                "Could not find a directly downloadable YouTube stream with both audio and video."
+            )
+
+        selected_format = progressive_candidates[0]
+        return selected_format["url"], (selected_format.get("ext") or "mp4").lower()
+
+    def download_video_stream(
+        self,
+        source_url: str,
+        output_path: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> str:
+        logger.info("Downloading media stream to %s", output_path)
+
+        with requests.get(
+            source_url,
+            headers=headers or DEFAULT_MEDIA_REQUEST_HEADERS,
+            stream=True,
+            timeout=(10, 120),
+        ) as response:
+            try:
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                raise Exception(f"Media stream download failed : {str(exc)}") from exc
+
+            with open(output_path, "wb") as output_file:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        output_file.write(chunk)
+
+        return output_path
+
     def download_youtube_video(self, url, output_path="temp_video.mp4"):
         """
         Downloads the YouTube video to a local file.
         """
         _, canonical_url = normalize_youtube_url(url)
         logger.info("Downloading Youtube Video : %s", canonical_url)
+
+        try:
+            stream_url, _ = self.resolve_youtube_stream_url(canonical_url)
+            return self.download_video_stream(
+                stream_url,
+                output_path=output_path,
+                headers={
+                    **DEFAULT_MEDIA_REQUEST_HEADERS,
+                    "Referer": canonical_url,
+                },
+            )
+        except Exception as exc:
+            if _is_youtube_auth_challenge_error(exc) or YOUTUBE_DOWNLOAD_BLOCKED_MESSAGE in str(exc):
+                raise Exception(YOUTUBE_DOWNLOAD_BLOCKED_MESSAGE) from exc
+            logger.warning(
+                "Direct YouTube stream download failed for %s. Falling back to yt-dlp download. Error: %s",
+                canonical_url,
+                exc,
+            )
 
         try:
             with yt_dlp.YoutubeDL(
