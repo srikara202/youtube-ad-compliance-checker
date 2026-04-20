@@ -1,7 +1,7 @@
 import { ChangeEvent, FormEvent, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
-import { createUploadAudit, createUrlAudit, getAudit } from "./api";
+import { createUploadAudit, getAudit } from "./api";
 import type {
   AuditJobResponse,
   AuditSourceType,
@@ -9,8 +9,6 @@ import type {
   ComplianceStatus,
   JobStatus
 } from "./types";
-import { validateRemoteMediaUrl } from "./utils/media";
-import { validateYouTubeUrl } from "./utils/youtube";
 
 const TERMINAL_STATUSES = new Set<JobStatus>(["COMPLETED", "FAILED"]);
 
@@ -20,7 +18,7 @@ const JOB_STATUS_COPY: Record<
 > = {
   QUEUED: {
     label: "Queued",
-    detail: "The audit has been queued and is waiting for the next available worker.",
+    detail: "The audit has been queued and is waiting to start processing.",
     tone: "neutral"
   },
   PROCESSING: {
@@ -40,81 +38,22 @@ const JOB_STATUS_COPY: Record<
   }
 };
 
-type SourceMode = "youtube" | "media_url" | "upload";
-
-type CreateAuditPayload =
-  | { sourceMode: "youtube"; sourceUrl: string }
-  | { sourceMode: "media_url"; sourceUrl: string }
-  | { sourceMode: "upload"; file: File };
-
-const SOURCE_MODE_COPY: Record<
-  SourceMode,
-  {
-    label: string;
-    title: string;
-    description: string;
-    inputLabel: string;
-    placeholder: string;
-    helper: string;
-  }
-> = {
-  youtube: {
-    label: "YouTube",
-    title: "Paste a YouTube ad link",
-    description: "Best for public YouTube watch, short, embed, and share URLs.",
-    inputLabel: "YouTube URL",
-    placeholder: "https://www.youtube.com/watch?v=...",
-    helper: "Supports watch URLs, share links, shorts, and embed links."
-  },
-  media_url: {
-    label: "Blob URL",
-    title: "Use a direct media URL or SAS URL",
-    description: "Best for Azure Blob Storage, signed URLs, or any public direct file URL.",
-    inputLabel: "Media URL or SAS URL",
-    placeholder: "https://storageaccount.blob.core.windows.net/videos/ad.mp4?<sas-token>",
-    helper: "Use a direct video file URL that Azure Video Indexer can fetch."
-  },
-  upload: {
-    label: "Upload",
-    title: "Upload a local video file",
-    description: "Best when the ad file is already on your machine and you want the most reliable Azure path.",
-    inputLabel: "Video file",
-    placeholder: "",
-    helper: "Upload MP4, MOV, M4V, WEBM, AVI, MKV, MPEG, or MPG."
-  }
+const UPLOAD_COPY = {
+  title: "Upload a local video file",
+  description: "Use a local video upload for the most reliable audit flow in this build.",
+  inputLabel: "Video file",
+  helper: "Upload MP4, MOV, M4V, WEBM, AVI, MKV, MPEG, or MPG."
 };
 
 export default function App() {
   const queryClient = useQueryClient();
-  const [sourceMode, setSourceMode] = useState<SourceMode>("youtube");
-  const [youtubeUrl, setYoutubeUrl] = useState("");
-  const [mediaUrl, setMediaUrl] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [activeAuditId, setActiveAuditId] = useState<string | null>(null);
   const [seedAudit, setSeedAudit] = useState<AuditJobResponse | null>(null);
 
-  const sourceCopy = SOURCE_MODE_COPY[sourceMode];
-  const youtubeValidation = youtubeUrl.trim() ? validateYouTubeUrl(youtubeUrl) : null;
-  const mediaValidation = mediaUrl.trim() ? validateRemoteMediaUrl(mediaUrl) : null;
-  const activeValidation =
-    sourceMode === "youtube"
-      ? youtubeValidation
-      : sourceMode === "media_url"
-        ? mediaValidation
-        : null;
-
   const createAuditMutation = useMutation({
-    mutationFn: (payload: CreateAuditPayload) => {
-      if (payload.sourceMode === "upload") {
-        return createUploadAudit(payload.file);
-      }
-
-      return createUrlAudit({
-        sourceType: payload.sourceMode,
-        sourceUrl: payload.sourceUrl
-      });
-    },
+    mutationFn: (file: File) => createUploadAudit(file),
     onSuccess: (audit) => {
       setFormError(null);
       setSeedAudit(audit);
@@ -146,10 +85,7 @@ export default function App() {
   const currentJobStatus = audit?.job_status ?? "QUEUED";
   const statusCopy = JOB_STATUS_COPY[currentJobStatus];
   const issues = audit?.result?.compliance_results ?? [];
-  const canSubmit =
-    sourceMode === "upload"
-      ? Boolean(uploadFile)
-      : Boolean(activeValidation?.isValid && activeValidation.normalizedUrl);
+  const canSubmit = Boolean(uploadFile);
 
   function resetPendingAudit() {
     setSeedAudit(null);
@@ -159,38 +95,6 @@ export default function App() {
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (sourceMode === "youtube") {
-      const nextValidation = validateYouTubeUrl(youtubeUrl);
-      if (!nextValidation.isValid || !nextValidation.normalizedUrl) {
-        setFormError(nextValidation.error);
-        return;
-      }
-
-      setFormError(null);
-      resetPendingAudit();
-      createAuditMutation.mutate({
-        sourceMode: "youtube",
-        sourceUrl: nextValidation.normalizedUrl
-      });
-      return;
-    }
-
-    if (sourceMode === "media_url") {
-      const nextValidation = validateRemoteMediaUrl(mediaUrl);
-      if (!nextValidation.isValid || !nextValidation.normalizedUrl) {
-        setFormError(nextValidation.error);
-        return;
-      }
-
-      setFormError(null);
-      resetPendingAudit();
-      createAuditMutation.mutate({
-        sourceMode: "media_url",
-        sourceUrl: nextValidation.normalizedUrl
-      });
-      return;
-    }
-
     if (!uploadFile) {
       setFormError("Choose a media file to upload.");
       return;
@@ -198,15 +102,7 @@ export default function App() {
 
     setFormError(null);
     resetPendingAudit();
-    createAuditMutation.mutate({
-      sourceMode: "upload",
-      file: uploadFile
-    });
-  }
-
-  function handleSourceModeChange(nextMode: SourceMode) {
-    setSourceMode(nextMode);
-    setFormError(null);
+    createAuditMutation.mutate(uploadFile);
   }
 
   function handleUploadChange(event: ChangeEvent<HTMLInputElement>) {
@@ -227,106 +123,53 @@ export default function App() {
           <p className="eyebrow">Youtube Add Compliance Checker</p>
           <div className="hero-grid">
             <div>
-              <h1>Audit ad videos from YouTube, Blob URLs, or direct uploads.</h1>
+              <h1>Audit ad videos from direct local uploads.</h1>
               <p className="hero-copy">
-                Choose the source that fits your workflow. The app creates a preview first,
-                then runs the Azure-backed compliance audit in the background.
+                This build is focused on the most reliable path. Upload a local video file,
+                then let the Azure-backed audit run in the background.
               </p>
             </div>
             <div className="hero-callout">
-              <span className="hero-callout-label">Production path</span>
-              <strong>YouTube jobs can run on your self-hosted worker instead of Azure.</strong>
+              <span className="hero-callout-label">Current build</span>
+              <strong>Direct upload is the supported input path.</strong>
               <p>
-                Blob URLs and uploads still run directly in Azure. When self-hosted mode is
-                enabled, pasted YouTube links stay in the same UI flow but are processed from
-                your own machine to avoid Azure IP blocking.
+                YouTube links and Blob URLs have been removed from the frontend so the app
+                stays on the most stable audit flow.
               </p>
             </div>
           </div>
 
           <form className="audit-form" onSubmit={handleSubmit}>
-            <div className="source-toggle" role="tablist" aria-label="Audit source">
-              {Object.entries(SOURCE_MODE_COPY).map(([mode, copy]) => (
-                <button
-                  key={mode}
-                  className={`source-toggle-button ${
-                    sourceMode === mode ? "source-toggle-button-active" : ""
-                  }`}
-                  type="button"
-                  onClick={() => handleSourceModeChange(mode as SourceMode)}
-                >
-                  <span>{copy.label}</span>
-                </button>
-              ))}
-            </div>
-
             <div className="source-mode-copy">
-              <p className="source-mode-title">{sourceCopy.title}</p>
-              <p>{sourceCopy.description}</p>
+              <p className="source-mode-title">{UPLOAD_COPY.title}</p>
+              <p>{UPLOAD_COPY.description}</p>
             </div>
 
-            <label className="input-label" htmlFor={sourceMode === "upload" ? "video-file" : "source-url"}>
-              {sourceCopy.inputLabel}
+            <label className="input-label" htmlFor="video-file">
+              {UPLOAD_COPY.inputLabel}
             </label>
 
-            {sourceMode === "upload" ? (
-              <div className="input-row">
-                <input
-                  key="upload-file"
-                  id="video-file"
-                  name="video-file"
-                  className="file-input"
-                  type="file"
-                  accept=".mp4,.mov,.m4v,.webm,.avi,.mkv,.mpeg,.mpg,video/*"
-                  onChange={handleUploadChange}
-                />
-                <button className="primary-button" type="submit" disabled={createAuditMutation.isPending || !canSubmit}>
-                  {createAuditMutation.isPending ? "Starting audit..." : "Run audit"}
-                </button>
-              </div>
-            ) : (
-              <div className="input-row">
-                <input
-                  key={sourceMode}
-                  id="source-url"
-                  name="source-url"
-                  className="url-input"
-                  placeholder={sourceCopy.placeholder}
-                  value={sourceMode === "youtube" ? youtubeUrl : mediaUrl}
-                  onChange={(event) => {
-                    if (sourceMode === "youtube") {
-                      setYoutubeUrl(event.target.value);
-                    } else {
-                      setMediaUrl(event.target.value);
-                    }
-                    if (formError) {
-                      setFormError(null);
-                    }
-                  }}
-                />
-                <button className="primary-button" type="submit" disabled={createAuditMutation.isPending || !canSubmit}>
-                  {createAuditMutation.isPending ? "Starting audit..." : "Run audit"}
-                </button>
-              </div>
-            )}
+            <div className="input-row">
+              <input
+                key="upload-file"
+                id="video-file"
+                name="video-file"
+                className="file-input"
+                type="file"
+                accept=".mp4,.mov,.m4v,.webm,.avi,.mkv,.mpeg,.mpg,video/*"
+                onChange={handleUploadChange}
+              />
+              <button className="primary-button" type="submit" disabled={createAuditMutation.isPending || !canSubmit}>
+                {createAuditMutation.isPending ? "Starting audit..." : "Run audit"}
+              </button>
+            </div>
 
             <div className="helper-row">
-              <span>{sourceCopy.helper}</span>
-              {sourceMode === "youtube" && youtubeValidation?.youtubeVideoId ? (
-                <span className="helper-chip">Video ID: {youtubeValidation.youtubeVideoId}</span>
-              ) : null}
-              {sourceMode === "media_url" && mediaValidation?.host ? (
-                <span className="helper-chip">Host: {mediaValidation.host}</span>
-              ) : null}
-              {sourceMode === "upload" && uploadFile ? (
-                <span className="helper-chip">File: {uploadFile.name}</span>
-              ) : null}
+              <span>{UPLOAD_COPY.helper}</span>
+              {uploadFile ? <span className="helper-chip">File: {uploadFile.name}</span> : null}
             </div>
 
             {formError ? <p className="inline-error">{formError}</p> : null}
-            {!formError && activeValidation && !activeValidation.isValid ? (
-              <p className="inline-error">{activeValidation.error}</p>
-            ) : null}
           </form>
         </section>
 
@@ -357,7 +200,7 @@ export default function App() {
             ) : (
               <EmptyPanel
                 title="Source details will appear here"
-                description="Once the source is accepted, the backend will create a preview and start the audit job."
+                description="Once the file upload is accepted, the backend will create a preview and start the audit job."
               />
             )}
           </section>
@@ -395,7 +238,7 @@ export default function App() {
             ) : (
               <EmptyPanel
                 title="No audit running yet"
-                description="Submit a YouTube link, a Blob URL, or a local file to create an audit job and track it here."
+                description="Upload a local file to create an audit job and track it here."
               />
             )}
           </section>
