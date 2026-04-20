@@ -15,6 +15,7 @@ from backend.src.api.audit_jobs import (
     claim_next_audit_job,
     get_job_store_mode,
     get_shared_job_store_modes,
+    reset_job_store,
     run_claimed_audit_job,
 )
 
@@ -60,11 +61,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def ensure_shared_job_store_mode() -> str:
+    store_mode = get_job_store_mode()
+    if store_mode in get_shared_job_store_modes():
+        return store_mode
+
+    storage_connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "").strip()
+    if store_mode == "memory" and storage_connection_string:
+        logger.warning(
+            "AUDIT_JOB_STORE is not configured for shared mode. Defaulting the self-hosted worker to azure_blob because AZURE_STORAGE_CONNECTION_STRING is available."
+        )
+        os.environ["AUDIT_JOB_STORE"] = "azure_blob"
+        os.environ.setdefault("AUDIT_JOB_BLOB_CONTAINER", "audit-jobs")
+        reset_job_store()
+        return get_job_store_mode()
+
+    return store_mode
+
+
 def main() -> int:
     args = parse_args()
     logging.basicConfig(level=logging.INFO)
 
-    store_mode = get_job_store_mode()
+    store_mode = ensure_shared_job_store_mode()
     if store_mode not in get_shared_job_store_modes():
         logger.error(
             "AUDIT_JOB_STORE=%s is not a shared store. Set AUDIT_JOB_STORE=azure_blob before running the self-hosted worker.",

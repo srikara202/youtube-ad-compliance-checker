@@ -1,4 +1,6 @@
+import os
 import unittest
+from argparse import Namespace
 from unittest.mock import patch
 
 from backend.src.api import audit_jobs
@@ -49,3 +51,32 @@ class SelfHostedWorkerTests(unittest.TestCase):
     def test_process_next_job_returns_false_when_queue_is_empty(self):
         processed = self_hosted_worker.process_next_job(worker_id="worker-home")
         self.assertFalse(processed)
+
+    def test_main_defaults_to_blob_store_when_storage_connection_exists(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "AZURE_STORAGE_CONNECTION_STRING": "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=test;EndpointSuffix=core.windows.net"
+            },
+            clear=False,
+        ):
+            os.environ.pop("AUDIT_JOB_STORE", None)
+            os.environ.pop("AUDIT_JOB_BLOB_CONTAINER", None)
+            with patch(
+                "backend.src.worker.self_hosted_worker.parse_args",
+                return_value=Namespace(once=True, poll_seconds=10),
+            ), patch(
+                "backend.src.worker.self_hosted_worker.get_job_store_mode",
+                side_effect=["memory", "azure_blob"],
+            ), patch(
+                "backend.src.worker.self_hosted_worker.reset_job_store"
+            ) as reset_mock, patch(
+                "backend.src.worker.self_hosted_worker.process_next_job",
+                return_value=False,
+            ):
+                exit_code = self_hosted_worker.main()
+                self.assertEqual(os.environ["AUDIT_JOB_STORE"], "azure_blob")
+                self.assertEqual(os.environ["AUDIT_JOB_BLOB_CONTAINER"], "audit-jobs")
+
+        self.assertEqual(exit_code, 0)
+        reset_mock.assert_called_once()
