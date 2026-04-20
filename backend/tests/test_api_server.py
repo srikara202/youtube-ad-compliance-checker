@@ -63,6 +63,7 @@ class ApiServerTests(unittest.TestCase):
         metadata_mock.assert_called_once()
         create_job_mock.assert_called_once()
         start_job_mock.assert_called_once_with("audit-123")
+        self.assertEqual(create_job_mock.call_args.kwargs["execution_target"], "azure")
 
     def test_create_audit_accepts_remote_media_urls(self):
         created_job = build_job()
@@ -103,6 +104,28 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(payload["video"]["source_label"], "ad.mp4")
         metadata_mock.assert_called_once()
         create_job_mock.assert_called_once()
+        start_job_mock.assert_called_once_with("audit-123")
+        self.assertEqual(create_job_mock.call_args.kwargs["execution_target"], "azure")
+
+    def test_create_audit_can_queue_youtube_for_self_hosted_worker(self):
+        created_job = build_job()
+
+        with patch.dict("os.environ", {"YOUTUBE_AUDIT_EXECUTION_TARGET": "self_hosted"}), patch(
+            "backend.src.api.server.extract_youtube_metadata",
+            return_value=created_job["video"],
+        ), patch(
+            "backend.src.api.server.create_audit_job",
+            return_value=created_job,
+        ) as create_job_mock, patch(
+            "backend.src.api.server.start_audit_job"
+        ) as start_job_mock:
+            response = self.client.post(
+                "/audits",
+                json={"video_url": "https://youtu.be/abc123xyz45"},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(create_job_mock.call_args.kwargs["execution_target"], "self_hosted")
         start_job_mock.assert_called_once_with("audit-123")
 
     def test_create_upload_audit_returns_preview_and_job_id(self):
@@ -146,6 +169,7 @@ class ApiServerTests(unittest.TestCase):
         preview_mock.assert_called_once_with("ad.mp4")
         create_job_mock.assert_called_once()
         start_job_mock.assert_called_once_with("audit-123")
+        self.assertEqual(create_job_mock.call_args.kwargs["execution_target"], "azure")
 
     def test_create_audit_rejects_invalid_youtube_urls(self):
         with patch(

@@ -20,7 +20,7 @@ const JOB_STATUS_COPY: Record<
 > = {
   QUEUED: {
     label: "Queued",
-    detail: "The audit has been queued and is about to start processing.",
+    detail: "The audit has been queued and is waiting for the next available worker.",
     tone: "neutral"
   },
   PROCESSING: {
@@ -234,11 +234,12 @@ export default function App() {
               </p>
             </div>
             <div className="hero-callout">
-              <span className="hero-callout-label">Reliable Azure path</span>
-              <strong>Blob URLs and uploads avoid YouTube download blocking.</strong>
+              <span className="hero-callout-label">Production path</span>
+              <strong>YouTube jobs can run on your self-hosted worker instead of Azure.</strong>
               <p>
-                Use YouTube for fast public previews, or switch to Blob URL / Upload when you
-                need the full audit to complete reliably in Azure.
+                Blob URLs and uploads still run directly in Azure. When self-hosted mode is
+                enabled, pasted YouTube links stay in the same UI flow but are processed from
+                your own machine to avoid Azure IP blocking.
               </p>
             </div>
           </div>

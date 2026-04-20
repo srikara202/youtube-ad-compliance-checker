@@ -81,13 +81,36 @@ Option B: configure it manually in GitHub:
 - Pull requests to `main` run backend tests, frontend tests, and frontend build
 - Pushes to `main` rerun the same checks and deploy to Azure App Service
 
-## 5. App Service expectations
+## 5. Self-hosted YouTube worker
+
+If you want pasted YouTube links to avoid Azure IP blocking, keep the web app in Azure but move YouTube processing to your own machine:
+
+- Set `AUDIT_JOB_STORE=azure_blob` on the Azure App Service
+- Set `YOUTUBE_AUDIT_EXECUTION_TARGET=self_hosted` on the Azure App Service
+- Leave direct uploads and media URLs on the default Azure path
+- Use the same `AZURE_STORAGE_CONNECTION_STRING` on your local machine so the worker and App Service share the same audit job records
+
+Run the local worker from the repo root:
+
+```powershell
+python -m backend.src.worker.self_hosted_worker
+```
+
+Optional one-shot mode:
+
+```powershell
+python -m backend.src.worker.self_hosted_worker --once
+```
+
+The worker polls the shared Azure Blob job store, claims queued YouTube jobs, runs the audit from your home network, and writes the final status back for the browser to poll through `/audits/{audit_id}`.
+
+## 6. App Service expectations
 
 - App Service uses `requirements.txt` during build automation
 - `startup.sh` launches Gunicorn with the Uvicorn worker
 - The React frontend must be built in CI so `frontend/dist` is included in the deployment package
 
-## 6. Smoke test after deploy
+## 7. Smoke test after deploy
 
 Verify:
 

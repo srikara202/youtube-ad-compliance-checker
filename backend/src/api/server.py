@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from backend.src.api.audit_jobs import (
     create_audit_job,
     get_audit_job,
+    resolve_youtube_execution_target,
     run_compliance_audit,
     start_audit_job,
 )
@@ -197,6 +198,7 @@ async def create_video_audit(request: AuditUrlRequest):
                 "source_url": video["video_url"],
                 "local_file_path": None,
             }
+            execution_target = resolve_youtube_execution_target()
         else:
             video = extract_media_url_metadata(source_url)
             source = {
@@ -204,10 +206,11 @@ async def create_video_audit(request: AuditUrlRequest):
                 "source_url": video["video_url"],
                 "local_file_path": None,
             }
+            execution_target = "azure"
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    job = create_audit_job(video, source)
+    job = create_audit_job(video, source, execution_target=execution_target)
     logger.info("Created audit job %s for %s", job["audit_id"], video["video_url"])
     start_audit_job(job["audit_id"])
     return AuditJobResponse.model_validate(job)
@@ -227,7 +230,7 @@ async def create_uploaded_audit(file: UploadFile = File(...)):
             "source_url": video["video_url"],
             "local_file_path": str(saved_file),
         }
-        job = create_audit_job(video, source)
+        job = create_audit_job(video, source, execution_target="azure")
         logger.info("Created upload audit job %s for %s", job["audit_id"], file.filename)
         start_audit_job(job["audit_id"])
         return AuditJobResponse.model_validate(job)

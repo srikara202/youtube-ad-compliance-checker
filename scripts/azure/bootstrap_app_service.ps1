@@ -129,6 +129,15 @@ if (-not $VideoIndexerAccountName -and $envMap.ContainsKey("AZURE_VI_NAME")) {
 
 $appSettings.Add("SCM_DO_BUILD_DURING_DEPLOYMENT=true")
 $appSettings.Add("ENABLE_ORYX_BUILD=true")
+if (-not $envMap.ContainsKey("AUDIT_JOB_STORE")) {
+    $appSettings.Add("AUDIT_JOB_STORE=azure_blob")
+}
+if (-not $envMap.ContainsKey("AUDIT_JOB_BLOB_CONTAINER")) {
+    $appSettings.Add("AUDIT_JOB_BLOB_CONTAINER=audit-jobs")
+}
+if (-not $envMap.ContainsKey("YOUTUBE_AUDIT_EXECUTION_TARGET")) {
+    $appSettings.Add("YOUTUBE_AUDIT_EXECUTION_TARGET=self_hosted")
+}
 if ($envMap.ContainsKey("FRONTEND_ORIGINS")) {
     $filteredSettings = [System.Collections.Generic.List[string]]::new()
     foreach ($setting in $appSettings) {

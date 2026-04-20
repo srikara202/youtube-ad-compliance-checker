@@ -27,6 +27,25 @@ Backend environment variables are still read from `.env`. The existing Azure and
 
 - `FRONTEND_ORIGINS`: comma-separated list of allowed browser origins for CORS. Defaults to `http://localhost:5173,http://127.0.0.1:5173`
 - `FRONTEND_DIST_DIR`: optional override for the built frontend directory when FastAPI serves the production React app
+- `AUDIT_JOB_STORE`: `memory` for local-only jobs, or `azure_blob` for a shared job store between Azure App Service and a self-hosted worker
+- `AUDIT_JOB_BLOB_CONTAINER`: optional Azure Blob container name for job records. Defaults to `audit-jobs`
+- `AUDIT_JOB_BLOB_PREFIX`: optional blob prefix for job JSON documents. Defaults to `jobs`
+- `YOUTUBE_AUDIT_EXECUTION_TARGET`: `azure` or `self_hosted`. Set this to `self_hosted` on Azure when you want pasted YouTube links to be processed by your home machine instead of App Service
+
+## Self-Hosted YouTube Worker
+
+The cheapest reliable fix for YouTube bot-blocking is to keep the UI and API on Azure, but process queued YouTube jobs from your own machine:
+
+1. Set the Azure app setting `AUDIT_JOB_STORE=azure_blob`
+2. Set the Azure app setting `YOUTUBE_AUDIT_EXECUTION_TARGET=self_hosted`
+3. Keep `AZURE_STORAGE_CONNECTION_STRING` available to both Azure and your local worker
+4. Run the worker on your machine from the repo root:
+
+```powershell
+python -m backend.src.worker.self_hosted_worker
+```
+
+Use `python -m backend.src.worker.self_hosted_worker --once` for a single queue pass.
 
 ## Frontend
 
