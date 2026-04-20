@@ -22,23 +22,32 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def run_compliance_audit(video_url: str, video_id: str) -> dict[str, Any]:
+def run_compliance_audit(source: dict[str, Any], video_id: str) -> dict[str, Any]:
     initial_inputs = {
-        "video_url": video_url,
+        "video_url": source.get("source_url") or source.get("video_url") or "",
         "video_id": video_id,
+        "source_type": source.get("source_type", "youtube"),
+        "source_url": source.get("source_url"),
+        "local_file_path": source.get("local_file_path"),
         "compliance_results": [],
         "errors": [],
     }
     return compliance_graph.invoke(initial_inputs)
 
 
-def create_audit_job(video: dict[str, str]) -> dict[str, Any]:
+def create_audit_job(video: dict[str, Any], source: dict[str, Any] | None = None) -> dict[str, Any]:
     audit_id = str(uuid.uuid4())
     timestamp = _utc_timestamp()
+    source_record = source or {
+        "source_type": video.get("source_type", "youtube"),
+        "source_url": video.get("video_url"),
+        "local_file_path": None,
+    }
     record = {
         "audit_id": audit_id,
         "job_status": "QUEUED",
         "video": video,
+        "source": source_record,
         "result": None,
         "error": None,
         "created_at": timestamp,
@@ -80,12 +89,16 @@ def _run_audit_job(audit_id: str) -> None:
         logger.warning("Audit job %s could not be started because it was not found.", audit_id)
         return
 
-    video = job["video"]
+    source = job.get("source") or {
+        "source_type": job["video"].get("source_type", "youtube"),
+        "source_url": job["video"].get("video_url"),
+        "local_file_path": None,
+    }
     video_id = f"vid_{audit_id[:8]}"
 
     try:
         update_audit_job(audit_id, job_status="PROCESSING")
-        final_state = run_compliance_audit(video["video_url"], video_id)
+        final_state = run_compliance_audit(source, video_id)
         errors = final_state.get("errors") or []
         if errors:
             update_audit_job(

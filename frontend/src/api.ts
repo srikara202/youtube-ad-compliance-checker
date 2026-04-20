@@ -12,12 +12,14 @@ class ApiError extends Error {
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers ?? {});
+  if (!(init?.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    },
-    ...init
+    ...init,
+    headers
   });
 
   if (!response.ok) {
@@ -36,10 +38,29 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function createAudit(videoUrl: string): Promise<AuditJobResponse> {
+export async function createUrlAudit({
+  sourceType,
+  sourceUrl
+}: {
+  sourceType: "youtube" | "media_url";
+  sourceUrl: string;
+}): Promise<AuditJobResponse> {
   return fetchJson<AuditJobResponse>("/audits", {
     method: "POST",
-    body: JSON.stringify({ video_url: videoUrl })
+    body: JSON.stringify({
+      source_type: sourceType,
+      source_url: sourceUrl
+    })
+  });
+}
+
+export async function createUploadAudit(file: File): Promise<AuditJobResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return fetchJson<AuditJobResponse>("/audits/upload", {
+    method: "POST",
+    body: formData
   });
 }
 

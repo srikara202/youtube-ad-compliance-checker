@@ -20,6 +20,8 @@ class VideoAuditState(TypedDict):
     # input parameters
     video_url : str
     video_id : str
+    source_type : str
+    source_url : Optional[str]
 
     # ingestion and extraction data
     local_file_path : Optional[str]

@@ -181,6 +181,51 @@ input {
   border: 1px solid rgba(37, 41, 59, 0.08);
 }
 
+.source-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+}
+
+.source-toggle-button {
+  border: 1px solid rgba(37, 41, 59, 0.12);
+  border-radius: 999px;
+  padding: 0.55rem 0.9rem;
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+}
+
+.source-toggle-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(14, 124, 134, 0.28);
+}
+
+.source-toggle-button-active {
+  background: linear-gradient(135deg, rgba(14, 124, 134, 0.14), rgba(255, 255, 255, 0.95));
+  border-color: rgba(14, 124, 134, 0.32);
+  color: var(--teal);
+}
+
+.source-mode-copy {
+  margin-bottom: 1rem;
+}
+
+.source-mode-title {
+  margin: 0 0 0.2rem;
+  font-family: "Space Grotesk", "Trebuchet MS", sans-serif;
+  font-size: 1.1rem;
+  color: var(--ink);
+}
+
+.source-mode-copy p:last-child {
+  margin: 0;
+  color: var(--muted);
+}
+
 .input-label {
   display: inline-block;
   margin-bottom: 0.65rem;
@@ -207,6 +252,25 @@ input {
   border-color: rgba(14, 124, 134, 0.5);
   box-shadow: 0 0 0 4px rgba(14, 124, 134, 0.12);
   transform: translateY(-1px);
+}
+
+.file-input {
+  width: 100%;
+  border: 1px solid rgba(37, 41, 59, 0.14);
+  border-radius: 16px;
+  padding: 0.7rem 0.85rem;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.file-input::file-selector-button {
+  margin-right: 0.85rem;
+  border: 0;
+  border-radius: 12px;
+  padding: 0.65rem 0.95rem;
+  background: rgba(14, 124, 134, 0.12);
+  color: var(--teal);
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .primary-button {
@@ -307,6 +371,23 @@ input {
   background: #d9d9d9;
 }
 
+.video-thumbnail-fallback {
+  display: flex;
+  align-items: end;
+  justify-content: start;
+  padding: 1rem;
+  color: #fffaf6;
+  background:
+    linear-gradient(145deg, rgba(31, 34, 51, 0.85), rgba(14, 124, 134, 0.7)),
+    #2a3142;
+}
+
+.video-thumbnail-fallback span {
+  font-family: "Space Grotesk", "Trebuchet MS", sans-serif;
+  font-size: 1.2rem;
+  max-width: 11ch;
+}
+
 .video-meta {
   display: flex;
   flex-direction: column;
@@ -321,6 +402,10 @@ input {
 .video-meta a {
   word-break: break-word;
   color: var(--teal);
+}
+
+.video-source-note {
+  font-weight: 600;
 }
 
 .status-card {

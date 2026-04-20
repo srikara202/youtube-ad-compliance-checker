@@ -6,7 +6,7 @@ import os
 import re
 import time
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 import yt_dlp
@@ -109,9 +109,35 @@ def _build_youtube_thumbnail_url(video_id: str) -> str:
     return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
 
 
+def _build_display_title(source_name: str, fallback: str) -> str:
+    candidate = unquote((source_name or "").strip())
+    if not candidate:
+        return fallback
+
+    stem = Path(candidate).stem or candidate
+    pretty_title = re.sub(r"[_-]+", " ", stem)
+    pretty_title = re.sub(r"\s+", " ", pretty_title).strip()
+    return pretty_title or fallback
+
+
 def _is_youtube_auth_challenge_error(error: Exception | str) -> bool:
     error_text = str(error).lower()
     return any(marker in error_text for marker in YOUTUBE_AUTH_CHALLENGE_MARKERS)
+
+
+def normalize_media_source_url(url: str) -> str:
+    candidate = (url or "").strip()
+    if not candidate:
+        raise ValueError("Please provide a media URL.")
+
+    if "://" not in candidate:
+        candidate = f"https://{candidate}"
+
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Please provide a valid media URL.")
+
+    return candidate
 
 
 def _fetch_youtube_oembed_metadata(canonical_url: str, video_id: str) -> dict:
@@ -132,9 +158,39 @@ def _fetch_youtube_oembed_metadata(canonical_url: str, video_id: str) -> dict:
 
     return {
         "video_url": canonical_url,
+        "source_type": "youtube",
+        "source_label": video_id,
         "youtube_video_id": video_id,
         "title": title,
         "thumbnail_url": thumbnail_url,
+    }
+
+
+def extract_media_url_metadata(url: str) -> dict:
+    canonical_url = normalize_media_source_url(url)
+    parsed = urlparse(canonical_url)
+    file_name = Path(unquote(parsed.path)).name
+    source_label = file_name or parsed.netloc
+
+    return {
+        "video_url": canonical_url,
+        "source_type": "media_url",
+        "source_label": source_label,
+        "youtube_video_id": None,
+        "title": _build_display_title(source_label, "Remote media"),
+        "thumbnail_url": None,
+    }
+
+
+def build_uploaded_file_preview(filename: str | None) -> dict:
+    source_label = (filename or "uploaded-video.mp4").strip() or "uploaded-video.mp4"
+    return {
+        "video_url": f"uploaded://{source_label}",
+        "source_type": "upload",
+        "source_label": source_label,
+        "youtube_video_id": None,
+        "title": _build_display_title(source_label, "Uploaded video"),
+        "thumbnail_url": None,
     }
 
 
@@ -175,6 +231,8 @@ def extract_youtube_metadata(url: str) -> dict:
 
     return {
         "video_url": canonical_url,
+        "source_type": "youtube",
+        "source_label": youtube_video_id,
         "youtube_video_id": youtube_video_id,
         "title": title,
         "thumbnail_url": thumbnail_url,
@@ -224,6 +282,18 @@ class VideoIndexerService:
             raise Exception("Failed to get the VI account token : missing accessToken in response")
         return vi_token
 
+    @staticmethod
+    def _extract_uploaded_video_id(response: requests.Response) -> str:
+        try:
+            response_data = response.json()
+        except ValueError:
+            response_data = {"id": response.text.strip().strip('"')}
+
+        video_id = response_data.get("id") or response_data.get("videoId")
+        if not video_id:
+            raise Exception(f"Azure upload succeeded but no video id was returned : {response.text}")
+        return video_id
+
     def download_youtube_video(self, url, output_path="temp_video.mp4"):
         """
         Downloads the YouTube video to a local file.
@@ -265,15 +335,27 @@ class VideoIndexerService:
 
         if response.status_code not in (200, 202):
             raise Exception(f"Azure upload failed : {response.text}")
-        try:
-            response_data = response.json()
-        except ValueError:
-            response_data = {"id": response.text.strip().strip('"')}
+        return self._extract_uploaded_video_id(response)
 
-        video_id = response_data.get("id") or response_data.get("videoId")
-        if not video_id:
-            raise Exception(f"Azure upload succeeded but no video id was returned : {response.text}")
-        return video_id
+    def upload_video_url(self, source_url: str, video_name: str):
+        canonical_url = normalize_media_source_url(source_url)
+        arm_token = self.get_access_token()
+        vi_token = self.get_account_token(arm_token)
+
+        api_url = f"https://api.videoindexer.ai/{self.location}/Accounts/{self.account_id}/Videos"
+        params = {
+            "accessToken": vi_token,
+            "name": video_name,
+            "privacy": "Private",
+            "indexingPreset": "Default",
+            "videoUrl": canonical_url,
+        }
+
+        logger.info("Submitting remote media URL %s to Azure Video Indexer.......", canonical_url)
+        response = requests.post(api_url, params=params)
+        if response.status_code not in (200, 202):
+            raise Exception(f"Azure upload from URL failed : {response.text}")
+        return self._extract_uploaded_video_id(response)
 
     def wait_for_processing(self, video_id):
         logger.info("Waiting for the video %s to process.....", video_id)

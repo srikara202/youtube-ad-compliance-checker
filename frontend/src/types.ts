@@ -1,5 +1,6 @@
 export type JobStatus = "QUEUED" | "PROCESSING" | "COMPLETED" | "FAILED";
 export type ComplianceStatus = "PASS" | "FAIL" | "UNKNOWN";
+export type AuditSourceType = "youtube" | "media_url" | "upload";
 
 export interface ComplianceIssue {
   category: string;
@@ -9,9 +10,11 @@ export interface ComplianceIssue {
 
 export interface AuditVideoPreview {
   video_url: string;
-  youtube_video_id: string;
+  source_type: AuditSourceType;
+  source_label: string;
+  youtube_video_id: string | null;
   title: string;
-  thumbnail_url: string;
+  thumbnail_url: string | null;
 }
 
 export interface AuditJobResult {

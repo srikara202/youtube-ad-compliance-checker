@@ -14,9 +14,16 @@ def build_job(job_status="QUEUED", result=None, error=None):
         "job_status": job_status,
         "video": {
             "video_url": "https://www.youtube.com/watch?v=abc123xyz45",
+            "source_type": "youtube",
+            "source_label": "abc123xyz45",
             "youtube_video_id": "abc123xyz45",
             "title": "Acme Spring Promo",
             "thumbnail_url": "https://example.com/thumb.jpg",
+        },
+        "source": {
+            "source_type": "youtube",
+            "source_url": "https://www.youtube.com/watch?v=abc123xyz45",
+            "local_file_path": None,
         },
         "result": result,
         "error": error,
@@ -54,6 +61,89 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(payload["video"]["title"], "Acme Spring Promo")
         self.assertEqual(payload["video"]["thumbnail_url"], "https://example.com/thumb.jpg")
         metadata_mock.assert_called_once()
+        create_job_mock.assert_called_once()
+        start_job_mock.assert_called_once_with("audit-123")
+
+    def test_create_audit_accepts_remote_media_urls(self):
+        created_job = build_job()
+        created_job["video"] = {
+            "video_url": "https://storageaccount.blob.core.windows.net/videos/ad.mp4?sig=test",
+            "source_type": "media_url",
+            "source_label": "ad.mp4",
+            "youtube_video_id": None,
+            "title": "Ad",
+            "thumbnail_url": None,
+        }
+        created_job["source"] = {
+            "source_type": "media_url",
+            "source_url": "https://storageaccount.blob.core.windows.net/videos/ad.mp4?sig=test",
+            "local_file_path": None,
+        }
+
+        with patch(
+            "backend.src.api.server.extract_media_url_metadata",
+            return_value=created_job["video"],
+        ) as metadata_mock, patch(
+            "backend.src.api.server.create_audit_job",
+            return_value=created_job,
+        ) as create_job_mock, patch(
+            "backend.src.api.server.start_audit_job"
+        ) as start_job_mock:
+            response = self.client.post(
+                "/audits",
+                json={
+                    "source_url": "https://storageaccount.blob.core.windows.net/videos/ad.mp4?sig=test",
+                    "source_type": "media_url",
+                },
+            )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload["video"]["source_type"], "media_url")
+        self.assertEqual(payload["video"]["source_label"], "ad.mp4")
+        metadata_mock.assert_called_once()
+        create_job_mock.assert_called_once()
+        start_job_mock.assert_called_once_with("audit-123")
+
+    def test_create_upload_audit_returns_preview_and_job_id(self):
+        created_job = build_job()
+        created_job["video"] = {
+            "video_url": "uploaded://ad.mp4",
+            "source_type": "upload",
+            "source_label": "ad.mp4",
+            "youtube_video_id": None,
+            "title": "Ad",
+            "thumbnail_url": None,
+        }
+        created_job["source"] = {
+            "source_type": "upload",
+            "source_url": "uploaded://ad.mp4",
+            "local_file_path": "/tmp/ad.mp4",
+        }
+
+        with patch(
+            "backend.src.api.server.save_uploaded_media",
+            return_value=Path("/tmp/ad.mp4"),
+        ) as save_mock, patch(
+            "backend.src.api.server.build_uploaded_file_preview",
+            return_value=created_job["video"],
+        ) as preview_mock, patch(
+            "backend.src.api.server.create_audit_job",
+            return_value=created_job,
+        ) as create_job_mock, patch(
+            "backend.src.api.server.start_audit_job"
+        ) as start_job_mock:
+            response = self.client.post(
+                "/audits/upload",
+                files={"file": ("ad.mp4", b"video-bytes", "video/mp4")},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload["video"]["source_type"], "upload")
+        self.assertEqual(payload["video"]["source_label"], "ad.mp4")
+        save_mock.assert_called_once()
+        preview_mock.assert_called_once_with("ad.mp4")
         create_job_mock.assert_called_once()
         start_job_mock.assert_called_once_with("audit-123")
 

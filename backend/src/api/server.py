@@ -1,11 +1,13 @@
 import logging
 import os
+import shutil
+import tempfile
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -17,7 +19,11 @@ from backend.src.api.audit_jobs import (
     start_audit_job,
 )
 from backend.src.api.telemetry import setup_telemetry
-from backend.src.services.video_indexer import extract_youtube_metadata
+from backend.src.services.video_indexer import (
+    build_uploaded_file_preview,
+    extract_media_url_metadata,
+    extract_youtube_metadata,
+)
 
 # load environment variables
 load_dotenv(override=True)
@@ -33,6 +39,17 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 FRONTEND_DIST_DIR = Path(
     os.getenv("FRONTEND_DIST_DIR", str(REPO_ROOT / "frontend" / "dist"))
 ).expanduser()
+UPLOAD_TEMP_DIR = Path(os.getenv("UPLOAD_TEMP_DIR", tempfile.gettempdir())) / "youtube-ad-compliance-checker"
+ALLOWED_UPLOAD_EXTENSIONS = {
+    ".mp4",
+    ".mov",
+    ".m4v",
+    ".webm",
+    ".avi",
+    ".mkv",
+    ".mpeg",
+    ".mpg",
+}
 
 
 def get_frontend_origins() -> list[str]:
@@ -66,6 +83,15 @@ class AuditRequest(BaseModel):
     video_url: str
 
 
+class AuditUrlRequest(BaseModel):
+    source_url: Optional[str] = None
+    video_url: Optional[str] = None
+    source_type: Literal["youtube", "media_url"] = "youtube"
+
+    def resolved_source_url(self) -> str:
+        return (self.source_url or self.video_url or "").strip()
+
+
 class ComplianceIssue(BaseModel):
     category: str
     severity: str
@@ -82,9 +108,11 @@ class AuditResponse(BaseModel):
 
 class AuditVideoPreview(BaseModel):
     video_url: str
-    youtube_video_id: str
+    source_type: Literal["youtube", "media_url", "upload"]
+    source_label: str
+    youtube_video_id: Optional[str] = None
     title: str
-    thumbnail_url: str
+    thumbnail_url: Optional[str] = None
 
 
 class AuditJobResult(BaseModel):
@@ -101,6 +129,29 @@ class AuditJobResponse(BaseModel):
     error: Optional[str] = None
     created_at: str
     updated_at: str
+
+
+def ensure_upload_temp_dir() -> Path:
+    UPLOAD_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    return UPLOAD_TEMP_DIR
+
+
+def save_uploaded_media(file: UploadFile) -> Path:
+    if not file.filename or not file.filename.strip():
+        raise HTTPException(status_code=400, detail="Please choose a media file to upload.")
+
+    extension = Path(file.filename).suffix.lower()
+    if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload an MP4, MOV, M4V, WEBM, AVI, MKV, MPEG, or MPG file.",
+        )
+
+    upload_dir = ensure_upload_temp_dir()
+    with tempfile.NamedTemporaryFile(delete=False, dir=upload_dir, suffix=extension) as temp_file:
+        file.file.seek(0)
+        shutil.copyfileobj(file.file, temp_file)
+        return Path(temp_file.name)
 
 
 @app.post("/audit", response_model=AuditResponse)
@@ -130,19 +181,66 @@ async def audit_video(request: AuditRequest):
 
 
 @app.post("/audits", response_model=AuditJobResponse, status_code=202)
-async def create_video_audit(request: AuditRequest):
+async def create_video_audit(request: AuditUrlRequest):
     """
-    Creates an asynchronous audit job and starts background processing.
+    Creates an asynchronous audit job for a YouTube or remote media URL.
     """
+    source_url = request.resolved_source_url()
+    if not source_url:
+        raise HTTPException(status_code=400, detail="Please provide a source URL.")
+
     try:
-        video = extract_youtube_metadata(request.video_url)
+        if request.source_type == "youtube":
+            video = extract_youtube_metadata(source_url)
+            source = {
+                "source_type": "youtube",
+                "source_url": video["video_url"],
+                "local_file_path": None,
+            }
+        else:
+            video = extract_media_url_metadata(source_url)
+            source = {
+                "source_type": "media_url",
+                "source_url": video["video_url"],
+                "local_file_path": None,
+            }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    job = create_audit_job(video)
+    job = create_audit_job(video, source)
     logger.info("Created audit job %s for %s", job["audit_id"], video["video_url"])
     start_audit_job(job["audit_id"])
     return AuditJobResponse.model_validate(job)
+
+
+@app.post("/audits/upload", response_model=AuditJobResponse, status_code=202)
+async def create_uploaded_audit(file: UploadFile = File(...)):
+    """
+    Creates an asynchronous audit job for a directly uploaded video file.
+    """
+    saved_file: Path | None = None
+    try:
+        saved_file = save_uploaded_media(file)
+        video = build_uploaded_file_preview(file.filename)
+        source = {
+            "source_type": "upload",
+            "source_url": video["video_url"],
+            "local_file_path": str(saved_file),
+        }
+        job = create_audit_job(video, source)
+        logger.info("Created upload audit job %s for %s", job["audit_id"], file.filename)
+        start_audit_job(job["audit_id"])
+        return AuditJobResponse.model_validate(job)
+    except HTTPException:
+        if saved_file and saved_file.exists():
+            saved_file.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        if saved_file and saved_file.exists():
+            saved_file.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="Could not create upload audit job.") from exc
+    finally:
+        await file.close()
 
 
 @app.get("/audits/{audit_id}", response_model=AuditJobResponse)

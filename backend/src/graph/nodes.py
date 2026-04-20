@@ -33,32 +33,44 @@ def index_video_node(state:VideoAuditState) -> Dict[str, Any]:
     Extracts the insights
     '''
     video_url = state.get("video_url")
+    source_type = state.get("source_type", "youtube")
+    source_url = state.get("source_url") or video_url
+    local_file_path = state.get("local_file_path")
     video_id_input = state.get("video_id","vid_demo")
 
-    logger.info(f"---[Node:Indexer] Processing : {video_url}")
-
-    local_filename = "temp_audit_video.mp4"
+    logger.info(f"---[Node:Indexer] Processing : {source_type} -> {source_url}")
 
     try:
         vi_service = VideoIndexerService()
-        # download
-        if "youtube.com" in video_url or "youtu.be" in video_url:
-            local_path = vi_service.download_youtube_video(video_url, output_path=local_filename)
+        cleanup_paths = []
+        if source_type == "upload":
+            if not local_file_path or not os.path.exists(local_file_path):
+                raise Exception("Uploaded file could not be found for this audit job.")
+            local_path = local_file_path
+            cleanup_paths.append(local_path)
+            azure_video_id = vi_service.upload_video(local_path, video_name=video_id_input)
+        elif source_type == "media_url":
+            if not source_url:
+                raise Exception("Please provide a valid media URL for this audit.")
+            azure_video_id = vi_service.upload_video_url(source_url, video_name=video_id_input)
+        elif source_type == "youtube":
+            local_filename = "temp_audit_video.mp4"
+            if not source_url or ("youtube.com" not in source_url and "youtu.be" not in source_url):
+                raise Exception("Please provide a valid YouTube URL for this audit.")
+            local_path = vi_service.download_youtube_video(source_url, output_path=local_filename)
+            cleanup_paths.append(local_path)
+            azure_video_id = vi_service.upload_video(local_path, video_name=video_id_input)
         else:
-            raise Exception("Please provide a valid YouTube URL for this test.")
-        # upload
-        azure_video_id = vi_service.upload_video(local_path, video_name=video_id_input)
+            raise Exception("Unsupported audit source type.")
+
         logger.info(f"Upload Success. Azure ID : {azure_video_id}")
-        # cleanup
-        if os.path.exists(local_path):
-            os.remove(local_path)
         # wait
         raw_insights = vi_service.wait_for_processing(azure_video_id)
         # extract
         clean_data = vi_service.extract_data(raw_insights)
         logger.info("---[NODE: Indexer] Extraction Complete ----------------")
         return clean_data
-    
+
     except Exception as e:
         logger.error(f"Video Indexer Failed : {e}")
         return {
@@ -67,6 +79,10 @@ def index_video_node(state:VideoAuditState) -> Dict[str, Any]:
             "transcript" : "",
             "ocr_text" : []
         }
+    finally:
+        for cleanup_path in locals().get("cleanup_paths", []):
+            if cleanup_path and os.path.exists(cleanup_path):
+                os.remove(cleanup_path)
     
 # Node 2 : Compliance Auditor
 def audit_content_node(state:VideoAuditState) -> Dict[str, Any]:
