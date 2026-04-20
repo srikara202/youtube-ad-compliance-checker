@@ -8,6 +8,7 @@ import requests
 from backend.src.services.video_indexer import (
     VideoIndexerService,
     extract_youtube_metadata,
+    extract_youtube_transcript,
 )
 
 
@@ -60,6 +61,29 @@ class VideoIndexerMetadataTests(unittest.TestCase):
         self.assertEqual(metadata["title"], "Fallback promo")
         self.assertEqual(metadata["thumbnail_url"], "https://example.com/thumb.jpg")
         ydl.extract_info.assert_called_once()
+
+    def test_extract_youtube_transcript_builds_indexer_payload(self):
+        snippet_one = type("Snippet", (), {"text": "This just in"})()
+        snippet_two = type("Snippet", (), {"text": "Mint Mobile is back"})()
+        transcript_api = MagicMock()
+        transcript_api.fetch.return_value = [snippet_one, snippet_two]
+
+        with patch(
+            "backend.src.services.video_indexer.YouTubeTranscriptApi",
+            return_value=transcript_api,
+        ):
+            transcript_payload = extract_youtube_transcript("https://youtu.be/abc123xyz45")
+
+        self.assertEqual(
+            transcript_payload["transcript"],
+            "This just in Mint Mobile is back",
+        )
+        self.assertEqual(transcript_payload["ocr_text"], [])
+        self.assertEqual(transcript_payload["video_metadata"]["source"], "youtube_transcript_api")
+        self.assertEqual(
+            transcript_payload["video_metadata"]["youtube_video_id"],
+            "abc123xyz45",
+        )
 
 
 class VideoIndexerDownloadTests(unittest.TestCase):

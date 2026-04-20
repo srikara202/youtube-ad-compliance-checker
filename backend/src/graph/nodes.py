@@ -16,6 +16,10 @@ from backend.src.graph.state import VideoAuditState, ComplianceIssue
 
 # import service
 from backend.src.services.video_indexer import VideoIndexerService
+from backend.src.services.video_indexer import (
+    extract_youtube_transcript,
+    is_youtube_download_blocked_error,
+)
 
 # Load the .env file
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
@@ -57,9 +61,19 @@ def index_video_node(state:VideoAuditState) -> Dict[str, Any]:
             local_filename = "temp_audit_video.mp4"
             if not source_url or ("youtube.com" not in source_url and "youtu.be" not in source_url):
                 raise Exception("Please provide a valid YouTube URL for this audit.")
-            local_path = vi_service.download_youtube_video(source_url, output_path=local_filename)
-            cleanup_paths.append(local_path)
-            azure_video_id = vi_service.upload_video(local_path, video_name=video_id_input)
+            try:
+                local_path = vi_service.download_youtube_video(source_url, output_path=local_filename)
+                cleanup_paths.append(local_path)
+                azure_video_id = vi_service.upload_video(local_path, video_name=video_id_input)
+            except Exception as exc:
+                if not is_youtube_download_blocked_error(exc):
+                    raise
+
+                logger.warning(
+                    "Azure YouTube ingestion was blocked for %s. Falling back to public transcript.",
+                    source_url,
+                )
+                return extract_youtube_transcript(source_url)
         else:
             raise Exception("Unsupported audit source type.")
 

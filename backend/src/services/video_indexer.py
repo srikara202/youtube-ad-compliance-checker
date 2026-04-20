@@ -12,6 +12,7 @@ import requests
 import yt_dlp
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
+from youtube_transcript_api import YouTubeTranscriptApi
 
 # Load the .env file
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
@@ -124,6 +125,13 @@ def _build_display_title(source_name: str, fallback: str) -> str:
 def _is_youtube_auth_challenge_error(error: Exception | str) -> bool:
     error_text = str(error).lower()
     return any(marker in error_text for marker in YOUTUBE_AUTH_CHALLENGE_MARKERS)
+
+
+def is_youtube_download_blocked_error(error: Exception | str) -> bool:
+    error_text = str(error)
+    return YOUTUBE_DOWNLOAD_BLOCKED_MESSAGE in error_text or _is_youtube_auth_challenge_error(
+        error
+    )
 
 
 def _is_direct_http_media_format(
@@ -268,6 +276,33 @@ def extract_youtube_metadata(url: str) -> dict:
         "youtube_video_id": youtube_video_id,
         "title": title,
         "thumbnail_url": thumbnail_url,
+    }
+
+
+def extract_youtube_transcript(url: str) -> dict:
+    youtube_video_id, canonical_url = normalize_youtube_url(url)
+    logger.info("Fetching public YouTube transcript for %s", canonical_url)
+
+    try:
+        transcript = YouTubeTranscriptApi().fetch(youtube_video_id)
+    except Exception as exc:
+        raise Exception(
+            "Could not fetch a public YouTube transcript for this video."
+        ) from exc
+
+    transcript_lines = [snippet.text.strip() for snippet in transcript if snippet.text.strip()]
+    if not transcript_lines:
+        raise Exception("Public YouTube transcript was empty for this video.")
+
+    return {
+        "transcript": " ".join(transcript_lines),
+        "ocr_text": [],
+        "video_metadata": {
+            "duration": None,
+            "platform": "youtube",
+            "source": "youtube_transcript_api",
+            "youtube_video_id": youtube_video_id,
+        },
     }
 
 
