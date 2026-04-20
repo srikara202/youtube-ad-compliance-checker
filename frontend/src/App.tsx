@@ -40,7 +40,7 @@ const JOB_STATUS_COPY: Record<
 
 const UPLOAD_COPY = {
   title: "Upload a local video file",
-  description: "Use a local video upload for the most reliable audit flow in this build.",
+  description: "Upload your ad video and get a quick read on whether it is ready for YouTube.",
   inputLabel: "Video file",
   helper: "Upload MP4, MOV, M4V, WEBM, AVI, MKV, MPEG, or MPG."
 };
@@ -123,18 +123,10 @@ export default function App() {
           <p className="eyebrow">Youtube Add Compliance Checker</p>
           <div className="hero-grid">
             <div>
-              <h1>Audit ad videos from direct local uploads.</h1>
+              <h1>AI-powered review for YouTube ad compliance.</h1>
               <p className="hero-copy">
-                This build is focused on the most reliable path. Upload a local video file,
-                then let the Azure-backed audit run in the background.
-              </p>
-            </div>
-            <div className="hero-callout">
-              <span className="hero-callout-label">Current build</span>
-              <strong>Direct upload is the supported input path.</strong>
-              <p>
-                YouTube links and Blob URLs have been removed from the frontend so the app
-                stays on the most stable audit flow.
+                A demo project built with RAG, GPT-4o, Text Embedding 3, and Azure AI vector
+                search to assess ad creative against YouTube advertising guidance.
               </p>
             </div>
           </div>
@@ -307,6 +299,17 @@ export default function App() {
             )}
           </section>
         </section>
+
+        <footer className="app-footer">
+          <span>Built as an Azure AI demo project.</span>
+          <a
+            href="https://github.com/srikara202/youtube-ad-compliance-checker"
+            target="_blank"
+            rel="noreferrer"
+          >
+            View the project on GitHub
+          </a>
+        </footer>
       </main>
     </div>
   );

@@ -43,8 +43,13 @@ describe("App", () => {
 
     renderApp();
 
-    expect(screen.getByText(/audit ad videos from direct local uploads/i)).toBeInTheDocument();
+    expect(screen.getByText(/ai-powered review for youtube ad compliance/i)).toBeInTheDocument();
+    expect(screen.getByText(/azure ai vector search/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/video file/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /view the project on github/i })).toHaveAttribute(
+      "href",
+      "https://github.com/srikara202/youtube-ad-compliance-checker"
+    );
     expect(screen.queryByRole("button", { name: /youtube/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /blob url/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /run audit/i })).toBeDisabled();
