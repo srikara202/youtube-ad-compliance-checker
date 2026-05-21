@@ -57,7 +57,7 @@ jobs:
               python -m pip install --upgrade pip &&
               rm -rf python_packages &&
               mkdir -p python_packages/lib/site-packages &&
-              pip install --target python_packages/lib/site-packages -r requirements.txt
+              pip install --target python_packages/lib/site-packages -r requirements-appservice.txt
             '
 
       - name: Write deployment metadata
@@ -72,23 +72,32 @@ jobs:
           }
           EOF
 
+      - name: Assemble App Service package
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          rm -rf deploy-package
+          mkdir -p deploy-package/backend deploy-package/frontend deploy-package/python_packages/lib
+          cp -R backend/src deploy-package/backend/src
+          cp -R backend/data deploy-package/backend/data
+          cp -R frontend/dist deploy-package/frontend/dist
+          cp -R python_packages/lib/site-packages deploy-package/python_packages/lib/site-packages
+          cp startup.sh requirements-appservice.txt deployment-info.json deploy-package/
+          find deploy-package -type d -name '__pycache__' -prune -exec rm -rf {} +
+          find deploy-package -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+          du -sh deploy-package
+          test -f deploy-package/backend/src/api/billing.py
+          test -f deploy-package/backend/src/api/server.py
+          test -f deploy-package/frontend/dist/index.html
+          test -f deploy-package/deployment-info.json
+
       - name: Upload deployment package
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: webapp-package
           retention-days: 7
-          path: |
-            .
-            !.git/**
-            !.github/**
-            !.venv/**
-            !__pycache__/**
-            !backend/**/__pycache__/**
-            !backend/tests/**
-            !frontend/node_modules/**
-            !frontend/src/**
-            !frontend/*.tsbuildinfo
+          path: deploy-package
 
   deploy:
     name: Deploy to Azure App Service
@@ -152,7 +161,17 @@ jobs:
       - name: Create zip deployment package
         run: |
           set -euo pipefail
-          (cd webapp-package && zip -rq ../webapp-package.zip .)
+          package_root="webapp-package"
+          if [ -d "webapp-package/deploy-package" ]; then
+            package_root="webapp-package/deploy-package"
+          fi
+          test -f "$package_root/deployment-info.json"
+          test -f "$package_root/backend/src/api/billing.py"
+          test -f "$package_root/backend/src/api/server.py"
+          test -f "$package_root/frontend/dist/index.html"
+          du -sh "$package_root"
+          (cd "$package_root" && zip -rq "$GITHUB_WORKSPACE/webapp-package.zip" .)
+          du -h webapp-package.zip
           unzip -l webapp-package.zip | grep -E 'deployment-info.json|backend/src/api/billing.py|backend/src/api/server.py'
 
       - name: Deploy prebuilt zip package to Azure Web App
@@ -170,6 +189,20 @@ jobs:
             --track-status true \
             --timeout 900000
           az webapp restart --resource-group "$resource_group" --name "$app_name" --output none
+
+      - name: Show Azure deployment logs on failure
+        if: failure()
+        run: |
+          app_name="${{ secrets.AZURE_WEBAPP_NAME }}"
+          resource_group="${{ steps.webapp.outputs.resource-group }}"
+          az webapp log deployment list \
+            --resource-group "$resource_group" \
+            --name "$app_name" \
+            --output table || true
+          az webapp log deployment show \
+            --resource-group "$resource_group" \
+            --name "$app_name" \
+            --output json || true
 
       - name: Smoke test deployed billing API
         run: |

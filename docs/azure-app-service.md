@@ -107,6 +107,7 @@ The worker polls the shared Azure Blob job store, claims queued YouTube jobs, ru
 ## 6. App Service expectations
 
 - GitHub Actions builds the frontend and vendors Python dependencies before deployment
+- App Service deployments use `requirements-appservice.txt`, which contains only runtime dependencies for the FastAPI app
 - App Service remote/Oryx build should stay disabled for this prebuilt package deployment
 - `startup.sh` launches Gunicorn with the Uvicorn worker
 - The React frontend must be built in CI so `frontend/dist` is included in the deployment package
