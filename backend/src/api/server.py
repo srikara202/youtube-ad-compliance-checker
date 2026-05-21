@@ -1,4 +1,5 @@
 import logging
+import json
 import os
 import shutil
 import tempfile
@@ -544,12 +545,35 @@ def is_reserved_api_path(full_path: str) -> bool:
     return first_segment in RESERVED_API_PATHS
 
 
+def read_deployment_info() -> dict[str, str]:
+    info_path = Path(
+        os.getenv("DEPLOYMENT_INFO_FILE", str(REPO_ROOT / "deployment-info.json"))
+    ).expanduser()
+    try:
+        raw_info = json.loads(info_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    if not isinstance(raw_info, dict):
+        return {}
+
+    return {
+        key: str(value)
+        for key, value in raw_info.items()
+        if key in {"commit_sha", "run_id", "run_number", "deployed_at_utc"} and value
+    }
+
+
 @app.get("/health")
 def health_check():
     """
     Endpoint to verify API is working or not.
     """
-    return {"status": "healthy", "service": "Youtube Add Compliance Checker"}
+    payload = {"status": "healthy", "service": "Youtube Add Compliance Checker"}
+    deployment = read_deployment_info()
+    if deployment:
+        payload["deployment"] = deployment
+    return payload
 
 
 @app.get("/", include_in_schema=False)

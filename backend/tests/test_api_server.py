@@ -299,6 +299,27 @@ class ApiServerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Client route shell", response.text)
 
+    def test_health_includes_deployment_info_when_available(self):
+        with TemporaryDirectory() as temp_dir:
+            info_path = Path(temp_dir) / "deployment-info.json"
+            info_path.write_text(
+                """
+                {
+                  "commit_sha": "abc123",
+                  "run_id": "456",
+                  "run_number": "7",
+                  "deployed_at_utc": "2026-05-21T07:20:30Z"
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            with patch.dict("os.environ", {"DEPLOYMENT_INFO_FILE": str(info_path)}, clear=False):
+                response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["deployment"]["commit_sha"], "abc123")
+
     def test_unknown_api_routes_do_not_fallback_to_frontend(self):
         with TemporaryDirectory() as temp_dir:
             dist_dir = Path(temp_dir)

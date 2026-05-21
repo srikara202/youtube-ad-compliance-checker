@@ -60,6 +60,18 @@ jobs:
               pip install --target python_packages/lib/site-packages -r requirements.txt
             '
 
+      - name: Write deployment metadata
+        if: github.event_name == 'push'
+        run: |
+          cat > deployment-info.json <<EOF
+          {
+            "commit_sha": "${GITHUB_SHA}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_number": "${GITHUB_RUN_NUMBER}",
+            "deployed_at_utc": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          }
+          EOF
+
       - name: Upload deployment package
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
@@ -107,3 +119,20 @@ jobs:
         with:
           app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
           package: webapp-package
+
+      - name: Smoke test deployed billing API
+        run: |
+          set -euo pipefail
+          app_url="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+          for attempt in {1..30}; do
+            openapi="$(curl -fsS "$app_url/openapi.json" || true)"
+            if grep -q '"/billing/me"' <<< "$openapi"; then
+              echo "Billing API is live on the configured Azure Web App."
+              curl -fsS "$app_url/health"
+              exit 0
+            fi
+            echo "Waiting for the deployed billing API to become live (attempt ${attempt}/30)."
+            sleep 10
+          done
+          echo "::error::The configured Azure Web App did not expose /billing/me after deployment."
+          exit 1
