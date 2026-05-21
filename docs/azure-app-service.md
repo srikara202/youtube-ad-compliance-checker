@@ -117,3 +117,27 @@ Verify:
 - `https://<webapp-name>.azurewebsites.net/health` returns 200
 - `https://<webapp-name>.azurewebsites.net/` serves the React UI
 - Creating an audit from the browser starts and completes or fails with a visible terminal state
+
+## 8. Optional portfolio paywall
+
+To protect against unexpected Azure processing costs from public traffic, enable the credit-based portfolio paywall in App Service application settings:
+
+```text
+PAYWALL_ENABLED=true
+PUBLIC_SITE_URL=https://<webapp-name>.azurewebsites.net
+BILLING_TOKEN_SECRET=<long-random-secret>
+STRIPE_SECRET_KEY=<stripe-secret-key>
+STRIPE_WEBHOOK_SECRET=<stripe-webhook-secret>
+PAYWALL_CREDIT_PACK_CENTS=300
+PAYWALL_CREDIT_PACK_CREDITS=3
+MAX_AUDIT_VIDEO_SECONDS=180
+BILLING_INVITE_CODES_JSON={"RECRUITER-DEMO":{"credits":3,"max_redemptions":20}}
+```
+
+The paywall stores its small credit ledger in Azure Blob Storage through `AZURE_STORAGE_CONNECTION_STRING`. Configure Stripe to send `checkout.session.completed` events to:
+
+```text
+https://<webapp-name>.azurewebsites.net/billing/webhook
+```
+
+See `docs/stripe-paywall-setup.md` for the full Stripe dashboard checklist.

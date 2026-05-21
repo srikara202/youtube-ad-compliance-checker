@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -18,6 +18,28 @@ from backend.src.api.audit_jobs import (
     resolve_youtube_execution_target,
     run_compliance_audit,
     start_audit_job,
+)
+from backend.src.api.billing import (
+    BillingAuthError,
+    BillingConfigurationError,
+    BillingError,
+    CreditCharge,
+    InsufficientCreditsError,
+    InviteCodeError,
+    consume_audit_credits,
+    create_billing_token,
+    create_stripe_checkout_session,
+    credits_for_duration,
+    email_from_authorization_header,
+    get_billing_store,
+    get_paywall_settings,
+    grant_checkout_credits,
+    max_audit_credits,
+    normalize_email,
+    normalize_invite_code,
+    refund_audit_credits,
+    retrieve_stripe_checkout_session,
+    verify_stripe_webhook_event,
 )
 from backend.src.api.telemetry import setup_telemetry
 from backend.src.services.video_indexer import (
@@ -93,6 +115,19 @@ class AuditUrlRequest(BaseModel):
         return (self.source_url or self.video_url or "").strip()
 
 
+class BillingEmailRequest(BaseModel):
+    email: str
+
+
+class BillingClaimCheckoutRequest(BaseModel):
+    session_id: str
+
+
+class BillingRedeemRequest(BaseModel):
+    email: str
+    invite_code: str
+
+
 class ComplianceIssue(BaseModel):
     category: str
     severity: str
@@ -132,6 +167,33 @@ class AuditJobResponse(BaseModel):
     updated_at: str
 
 
+class PaywallConfigResponse(BaseModel):
+    enabled: bool
+    pack_credits: int
+    pack_price_cents: int
+    max_video_seconds: int
+    credit_seconds: int
+    invite_enabled: bool
+
+
+class BillingMeResponse(BaseModel):
+    email: Optional[str] = None
+    credits: int = 0
+    config: PaywallConfigResponse
+
+
+class BillingAccessResponse(BaseModel):
+    email: str
+    credits: int
+    access_token: str
+    config: PaywallConfigResponse
+
+
+class BillingCheckoutResponse(BaseModel):
+    session_id: str
+    checkout_url: str
+
+
 def ensure_upload_temp_dir() -> Path:
     UPLOAD_TEMP_DIR.mkdir(parents=True, exist_ok=True)
     return UPLOAD_TEMP_DIR
@@ -155,8 +217,168 @@ def save_uploaded_media(file: UploadFile) -> Path:
         return Path(temp_file.name)
 
 
+def paywall_config_response() -> PaywallConfigResponse:
+    settings = get_paywall_settings()
+    return PaywallConfigResponse(
+        enabled=settings.enabled,
+        pack_credits=settings.pack_credits,
+        pack_price_cents=settings.pack_cents,
+        max_video_seconds=settings.max_audit_video_seconds,
+        credit_seconds=settings.credit_seconds,
+        invite_enabled=bool(settings.invite_codes),
+    )
+
+
+def billing_access_response(email: str, credits: int) -> BillingAccessResponse:
+    return BillingAccessResponse(
+        email=email,
+        credits=credits,
+        access_token=create_billing_token(email),
+        config=paywall_config_response(),
+    )
+
+
+def billing_http_exception(exc: Exception) -> HTTPException:
+    if isinstance(exc, BillingAuthError):
+        return HTTPException(status_code=401, detail=str(exc))
+    if isinstance(exc, InsufficientCreditsError):
+        return HTTPException(status_code=402, detail=str(exc))
+    if isinstance(exc, InviteCodeError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, BillingConfigurationError):
+        return HTTPException(status_code=503, detail=str(exc))
+    return HTTPException(status_code=500, detail="Billing request failed.")
+
+
+def charge_for_audit(
+    authorization: str | None,
+    credits: int,
+    reason: str,
+) -> CreditCharge | None:
+    try:
+        return consume_audit_credits(
+            authorization=authorization,
+            credits=credits,
+            reason=reason,
+        )
+    except (BillingAuthError, BillingConfigurationError, InsufficientCreditsError) as exc:
+        raise billing_http_exception(exc) from exc
+
+
+def refund_if_needed(charge: CreditCharge | None, reason: str) -> None:
+    try:
+        refund_audit_credits(charge, reason=reason)
+    except Exception:
+        logger.exception("Could not refund consumed audit credits.")
+
+
+def resolve_upload_credits(declared_duration_seconds: float | None) -> int:
+    settings = get_paywall_settings()
+    if not settings.enabled:
+        return 0
+    if declared_duration_seconds is None or declared_duration_seconds <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not read the video duration. Choose a valid video file and try again.",
+        )
+    if declared_duration_seconds > settings.max_audit_video_seconds:
+        max_minutes = settings.max_audit_video_seconds // settings.credit_seconds
+        raise HTTPException(
+            status_code=400,
+            detail=f"Portfolio demo audits are limited to {max_minutes} minutes per video.",
+        )
+    return credits_for_duration(declared_duration_seconds, settings)
+
+
+@app.get("/billing/me", response_model=BillingMeResponse)
+async def get_billing_me(authorization: Optional[str] = Header(default=None)):
+    settings = get_paywall_settings()
+    config = paywall_config_response()
+    if not settings.enabled:
+        return BillingMeResponse(email=None, credits=0, config=config)
+
+    if not authorization:
+        return BillingMeResponse(email=None, credits=0, config=config)
+
+    try:
+        email = email_from_authorization_header(authorization, settings)
+        account = get_billing_store().get_account(email)
+        return BillingMeResponse(email=email, credits=account["credits"], config=config)
+    except BillingAuthError:
+        return BillingMeResponse(email=None, credits=0, config=config)
+    except BillingConfigurationError as exc:
+        raise billing_http_exception(exc) from exc
+
+
+@app.post("/billing/checkout", response_model=BillingCheckoutResponse)
+async def create_billing_checkout(request: BillingEmailRequest):
+    try:
+        email = normalize_email(request.email)
+        checkout_session = create_stripe_checkout_session(email)
+    except (ValueError, BillingError) as exc:
+        raise billing_http_exception(exc) if isinstance(exc, BillingError) else HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return BillingCheckoutResponse(
+        session_id=checkout_session["id"],
+        checkout_url=checkout_session["url"],
+    )
+
+
+@app.post("/billing/claim-checkout", response_model=BillingAccessResponse)
+async def claim_billing_checkout(request: BillingClaimCheckoutRequest):
+    try:
+        checkout_session = retrieve_stripe_checkout_session(request.session_id)
+        account = grant_checkout_credits(checkout_session)
+        email = account["email"]
+    except (BillingAuthError, BillingConfigurationError) as exc:
+        raise billing_http_exception(exc) from exc
+
+    return billing_access_response(email, account["credits"])
+
+
+@app.post("/billing/redeem", response_model=BillingAccessResponse)
+async def redeem_billing_invite(request: BillingRedeemRequest):
+    try:
+        settings = get_paywall_settings()
+        if not settings.enabled:
+            raise BillingConfigurationError("The paywall is not enabled.")
+        email = normalize_email(request.email)
+        code = normalize_invite_code(request.invite_code)
+        invite_config = settings.invite_codes.get(code)
+        if invite_config is None:
+            raise InviteCodeError("That invite code is not valid.")
+        account = get_billing_store().redeem_invite(email, code, invite_config)
+    except (ValueError, BillingAuthError, BillingConfigurationError, InviteCodeError) as exc:
+        raise billing_http_exception(exc) if isinstance(exc, BillingError) else HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return billing_access_response(email, account["credits"])
+
+
+@app.post("/billing/webhook")
+async def stripe_billing_webhook(request: Request):
+    payload = await request.body()
+    signature = request.headers.get("Stripe-Signature")
+    try:
+        event = verify_stripe_webhook_event(payload, signature)
+        if event.get("type") == "checkout.session.completed":
+            grant_checkout_credits(event["data"]["object"])
+    except (BillingAuthError, BillingConfigurationError) as exc:
+        raise billing_http_exception(exc) from exc
+
+    return {"received": True}
+
+
 @app.post("/audit", response_model=AuditResponse)
-async def audit_video(request: AuditRequest):
+async def audit_video(
+    request: AuditRequest,
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Main API endpoint that triggers the compliance audit workflow.
     """
@@ -165,6 +387,11 @@ async def audit_video(request: AuditRequest):
     logger.info("Received the audit request : %s (Session : %s)", request.video_url, session_id)
 
     try:
+        charge_for_audit(
+            authorization,
+            max_audit_credits(get_paywall_settings()),
+            reason=f"sync:{request.video_url}",
+        )
         final_state = run_compliance_audit(request.video_url, video_id_short)
         return AuditResponse(
             session_id=session_id,
@@ -173,6 +400,8 @@ async def audit_video(request: AuditRequest):
             final_report=final_state.get("final_report", "No Report Generated"),
             compliance_results=final_state.get("compliance_results", []),
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Audit Failed : %s", str(exc))
         raise HTTPException(
@@ -182,7 +411,10 @@ async def audit_video(request: AuditRequest):
 
 
 @app.post("/audits", response_model=AuditJobResponse, status_code=202)
-async def create_video_audit(request: AuditUrlRequest):
+async def create_video_audit(
+    request: AuditUrlRequest,
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Creates an asynchronous audit job for a YouTube or remote media URL.
     """
@@ -210,26 +442,46 @@ async def create_video_audit(request: AuditUrlRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    job = create_audit_job(video, source, execution_target=execution_target)
-    logger.info("Created audit job %s for %s", job["audit_id"], video["video_url"])
-    start_audit_job(job["audit_id"])
-    return AuditJobResponse.model_validate(job)
+    charge = charge_for_audit(
+        authorization,
+        max_audit_credits(get_paywall_settings()),
+        reason=f"{request.source_type}:{video['video_url']}",
+    )
+    try:
+        job = create_audit_job(video, source, execution_target=execution_target)
+        logger.info("Created audit job %s for %s", job["audit_id"], video["video_url"])
+        start_audit_job(job["audit_id"])
+        return AuditJobResponse.model_validate(job)
+    except Exception as exc:
+        refund_if_needed(charge, "audit_job_creation_failed")
+        raise HTTPException(status_code=500, detail="Could not create audit job.") from exc
 
 
 @app.post("/audits/upload", response_model=AuditJobResponse, status_code=202)
-async def create_uploaded_audit(file: UploadFile = File(...)):
+async def create_uploaded_audit(
+    file: UploadFile = File(...),
+    declared_duration_seconds: Optional[float] = Form(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Creates an asynchronous audit job for a directly uploaded video file.
     """
     saved_file: Path | None = None
+    charge: CreditCharge | None = None
     try:
         saved_file = save_uploaded_media(file)
+        audit_credits = resolve_upload_credits(declared_duration_seconds)
         video = build_uploaded_file_preview(file.filename)
         source = {
             "source_type": "upload",
             "source_url": video["video_url"],
             "local_file_path": str(saved_file),
         }
+        charge = charge_for_audit(
+            authorization,
+            audit_credits,
+            reason=f"upload:{file.filename}:{declared_duration_seconds}",
+        )
         job = create_audit_job(video, source, execution_target="azure")
         logger.info("Created upload audit job %s for %s", job["audit_id"], file.filename)
         start_audit_job(job["audit_id"])
@@ -239,6 +491,7 @@ async def create_uploaded_audit(file: UploadFile = File(...)):
             saved_file.unlink(missing_ok=True)
         raise
     except Exception as exc:
+        refund_if_needed(charge, "upload_audit_creation_failed")
         if saved_file and saved_file.exists():
             saved_file.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail="Could not create upload audit job.") from exc

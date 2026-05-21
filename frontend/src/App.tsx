@@ -1,9 +1,17 @@
-import { ChangeEvent, FormEvent, useState, type ReactNode } from "react";
+import { ChangeEvent, FormEvent, useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
-import { createUploadAudit, getAudit } from "./api";
+import {
+  claimCheckout,
+  createCheckout,
+  createUploadAudit,
+  getAudit,
+  getBillingMe,
+  redeemInvite
+} from "./api";
 import type {
   AuditJobResponse,
+  BillingAccessResponse,
   AuditSourceType,
   ComplianceIssue,
   ComplianceStatus,
@@ -11,6 +19,8 @@ import type {
 } from "./types";
 
 const TERMINAL_STATUSES = new Set<JobStatus>(["COMPLETED", "FAILED"]);
+const BILLING_TOKEN_STORAGE_KEY = "portfolio-demo-billing-token";
+const BILLING_EMAIL_STORAGE_KEY = "portfolio-demo-billing-email";
 
 const JOB_STATUS_COPY: Record<
   JobStatus,
@@ -48,16 +58,106 @@ const UPLOAD_COPY = {
 export default function App() {
   const queryClient = useQueryClient();
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadDurationSeconds, setUploadDurationSeconds] = useState<number | null>(null);
+  const [durationError, setDurationError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [activeAuditId, setActiveAuditId] = useState<string | null>(null);
   const [seedAudit, setSeedAudit] = useState<AuditJobResponse | null>(null);
+  const [billingToken, setBillingToken] = useState<string | null>(() =>
+    window.localStorage.getItem(BILLING_TOKEN_STORAGE_KEY)
+  );
+  const [billingEmail, setBillingEmail] = useState<string>(() =>
+    window.localStorage.getItem(BILLING_EMAIL_STORAGE_KEY) ?? ""
+  );
+  const [inviteCode, setInviteCode] = useState("");
+  const [billingMessage, setBillingMessage] = useState<string | null>(null);
+
+  const billingQuery = useQuery({
+    queryKey: ["billing", billingToken],
+    queryFn: () => getBillingMe(billingToken),
+    retry: false
+  });
+
+  const paywallConfig = billingQuery.data?.config;
+  const paywallEnabled = paywallConfig?.enabled ?? false;
+  const billingLocked = billingQuery.isError;
+  const availableCredits = billingQuery.data?.credits ?? 0;
+  const creditSeconds = paywallConfig?.credit_seconds ?? 60;
+  const maxVideoSeconds = paywallConfig?.max_video_seconds ?? 180;
+  const requiredCredits =
+    uploadFile && uploadDurationSeconds !== null
+      ? Math.max(1, Math.ceil(uploadDurationSeconds / creditSeconds))
+      : 0;
+  const hasEnoughCredits = !paywallEnabled || (requiredCredits > 0 && availableCredits >= requiredCredits);
+
+  function saveBillingAccess(access: BillingAccessResponse) {
+    window.localStorage.setItem(BILLING_TOKEN_STORAGE_KEY, access.access_token);
+    window.localStorage.setItem(BILLING_EMAIL_STORAGE_KEY, access.email);
+    setBillingToken(access.access_token);
+    setBillingEmail(access.email);
+    queryClient.setQueryData(["billing", access.access_token], {
+      email: access.email,
+      credits: access.credits,
+      config: access.config
+    });
+  }
+
+  const checkoutMutation = useMutation({
+    mutationFn: (email: string) => createCheckout(email),
+    onSuccess: (checkout) => {
+      window.localStorage.setItem(BILLING_EMAIL_STORAGE_KEY, billingEmail.trim());
+      window.location.assign(checkout.checkout_url);
+    },
+    onError: (error) => {
+      setBillingMessage(error instanceof Error ? error.message : "Could not start checkout.");
+    }
+  });
+
+  const claimCheckoutMutation = useMutation({
+    mutationFn: (sessionId: string) => claimCheckout(sessionId),
+    onSuccess: (access) => {
+      saveBillingAccess(access);
+      setBillingMessage("Credits added. You can run the audit now.");
+      window.history.replaceState({}, document.title, window.location.pathname);
+    },
+    onError: (error) => {
+      setBillingMessage(error instanceof Error ? error.message : "Could not confirm checkout.");
+    }
+  });
+
+  const redeemMutation = useMutation({
+    mutationFn: ({ email, code }: { email: string; code: string }) =>
+      redeemInvite({ email, inviteCode: code }),
+    onSuccess: (access) => {
+      saveBillingAccess(access);
+      setInviteCode("");
+      setBillingMessage("Invite code applied. Credits are ready.");
+    },
+    onError: (error) => {
+      setBillingMessage(error instanceof Error ? error.message : "Could not redeem that invite code.");
+    }
+  });
 
   const createAuditMutation = useMutation({
-    mutationFn: (file: File) => createUploadAudit(file),
+    mutationFn: ({
+      file,
+      declaredDurationSeconds,
+      accessToken
+    }: {
+      file: File;
+      declaredDurationSeconds: number | null;
+      accessToken: string | null;
+    }) =>
+      createUploadAudit({
+        file,
+        declaredDurationSeconds,
+        accessToken
+      }),
     onSuccess: (audit) => {
       setFormError(null);
       setSeedAudit(audit);
       setActiveAuditId(audit.audit_id);
+      queryClient.invalidateQueries({ queryKey: ["billing"] });
       queryClient.setQueryData(["audit", audit.audit_id], audit);
     },
     onError: (error) => {
@@ -66,6 +166,13 @@ export default function App() {
       setFormError(error instanceof Error ? error.message : "Unable to start the audit.");
     }
   });
+
+  useEffect(() => {
+    const sessionId = new URLSearchParams(window.location.search).get("checkout_session_id");
+    if (sessionId) {
+      claimCheckoutMutation.mutate(sessionId);
+    }
+  }, []);
 
   const auditQuery = useQuery({
     queryKey: ["audit", activeAuditId],
@@ -85,7 +192,11 @@ export default function App() {
   const currentJobStatus = audit?.job_status ?? "QUEUED";
   const statusCopy = JOB_STATUS_COPY[currentJobStatus];
   const issues = audit?.result?.compliance_results ?? [];
-  const canSubmit = Boolean(uploadFile);
+  const canSubmit =
+    Boolean(uploadFile) &&
+    !createAuditMutation.isPending &&
+    !billingLocked &&
+    (!paywallEnabled || (!durationError && Boolean(billingToken) && hasEnoughCredits));
 
   function resetPendingAudit() {
     setSeedAudit(null);
@@ -100,17 +211,68 @@ export default function App() {
       return;
     }
 
+    if (paywallEnabled) {
+      if (!billingToken) {
+        setFormError("Buy credits or redeem an invite code before running an audit.");
+        return;
+      }
+      if (durationError || uploadDurationSeconds === null) {
+        setFormError("Wait for the video duration check to finish before running the audit.");
+        return;
+      }
+      if (uploadDurationSeconds > maxVideoSeconds) {
+        setFormError(`Portfolio demo audits are limited to ${formatDuration(maxVideoSeconds)}.`);
+        return;
+      }
+      if (!hasEnoughCredits) {
+        setFormError(`This audit needs ${requiredCredits} credits. Add credits or use an invite code.`);
+        return;
+      }
+    }
+
     setFormError(null);
     resetPendingAudit();
-    createAuditMutation.mutate(uploadFile);
+    createAuditMutation.mutate({
+      file: uploadFile,
+      declaredDurationSeconds: paywallEnabled ? uploadDurationSeconds : null,
+      accessToken: paywallEnabled ? billingToken : null
+    });
   }
 
   function handleUploadChange(event: ChangeEvent<HTMLInputElement>) {
     const nextFile = event.target.files?.[0] ?? null;
     setUploadFile(nextFile);
+    setUploadDurationSeconds(null);
+    setDurationError(null);
     if (formError) {
       setFormError(null);
     }
+    if (!nextFile) {
+      return;
+    }
+    loadVideoDuration(nextFile)
+      .then((duration) => {
+        setUploadDurationSeconds(duration);
+        if (duration > maxVideoSeconds) {
+          setDurationError(`Portfolio demo audits are limited to ${formatDuration(maxVideoSeconds)}.`);
+        }
+      })
+      .catch(() => {
+        setDurationError("Could not read the video duration. Try another video file.");
+      });
+  }
+
+  function handleCheckout() {
+    setBillingMessage(null);
+    checkoutMutation.mutate(billingEmail);
+  }
+
+  function handleRedeemInvite() {
+    setBillingMessage(null);
+    redeemMutation.mutate({
+      email: billingEmail,
+      code: inviteCode
+    });
   }
 
   return (
@@ -130,6 +292,75 @@ export default function App() {
               </p>
             </div>
           </div>
+
+          {paywallEnabled ? (
+            <section className="access-panel" aria-label="Demo access">
+              <div className="access-copy">
+                <p className="hero-callout-label">Portfolio demo access</p>
+                <h2>Credits only cover cloud processing costs.</h2>
+                <p>
+                  This is not a commercial product. Each audit uses paid Azure services, so credits
+                  keep random traffic from creating surprise cloud bills. Recruiters and evaluators
+                  can use an invite code if I have shared one with them.
+                </p>
+              </div>
+
+              <div className="access-controls">
+                <label className="input-label" htmlFor="billing-email">
+                  Email
+                </label>
+                <input
+                  id="billing-email"
+                  className="url-input"
+                  type="email"
+                  value={billingEmail}
+                  onChange={(event) => setBillingEmail(event.target.value)}
+                  placeholder="you@example.com"
+                />
+
+                <div className="access-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={!billingEmail || checkoutMutation.isPending}
+                    onClick={handleCheckout}
+                  >
+                    {checkoutMutation.isPending
+                      ? "Opening checkout..."
+                      : `Buy ${paywallConfig?.pack_credits ?? 3} credits - ${formatCurrencyCents(
+                          paywallConfig?.pack_price_cents ?? 300
+                        )}`}
+                  </button>
+                  <span className="credit-balance">{availableCredits} credits available</span>
+                </div>
+
+                {paywallConfig?.invite_enabled ? (
+                  <div className="invite-row">
+                    <input
+                      className="url-input"
+                      type="text"
+                      value={inviteCode}
+                      onChange={(event) => setInviteCode(event.target.value)}
+                      placeholder="Invite code"
+                    />
+                    <button
+                      className="secondary-button secondary-button-muted"
+                      type="button"
+                      disabled={!billingEmail || !inviteCode || redeemMutation.isPending}
+                      onClick={handleRedeemInvite}
+                    >
+                      {redeemMutation.isPending ? "Applying..." : "Use invite code"}
+                    </button>
+                  </div>
+                ) : null}
+
+                {billingMessage ? <p className="inline-note">{billingMessage}</p> : null}
+                {billingQuery.isError ? (
+                  <p className="inline-error">Could not load credit status. Audit runs are locked for now.</p>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
 
           <form className="audit-form" onSubmit={handleSubmit}>
             <div className="source-mode-copy">
@@ -159,8 +390,17 @@ export default function App() {
             <div className="helper-row">
               <span>{UPLOAD_COPY.helper}</span>
               {uploadFile ? <span className="helper-chip">File: {uploadFile.name}</span> : null}
+              {paywallEnabled && uploadFile && uploadDurationSeconds !== null && !durationError ? (
+                <span className="helper-chip">
+                  This audit will use {requiredCredits} {requiredCredits === 1 ? "credit" : "credits"}
+                </span>
+              ) : null}
+              {paywallEnabled && uploadFile && uploadDurationSeconds === null && !durationError ? (
+                <span className="helper-chip">Checking video duration...</span>
+              ) : null}
             </div>
 
+            {paywallEnabled && durationError ? <p className="inline-error">{durationError}</p> : null}
             {formError ? <p className="inline-error">{formError}</p> : null}
           </form>
         </section>
@@ -401,4 +641,38 @@ function formatTimestamp(timestamp: string): string {
     return timestamp;
   }
   return parsed.toLocaleString();
+}
+
+function loadVideoDuration(file: File): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      URL.revokeObjectURL(objectUrl);
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        resolve(video.duration);
+        return;
+      }
+      reject(new Error("Invalid video duration."));
+    };
+    video.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Could not read video duration."));
+    };
+    video.src = objectUrl;
+  });
+}
+
+function formatDuration(seconds: number): string {
+  const minutes = Math.ceil(seconds / 60);
+  return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+}
+
+function formatCurrencyCents(cents: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0
+  }).format(cents / 100);
 }

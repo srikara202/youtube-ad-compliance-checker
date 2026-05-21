@@ -364,6 +364,41 @@ Important nuance:
 - `YOUTUBE_AUDIT_EXECUTION_TARGET` only affects YouTube URL jobs
 - uploaded files and remote media URLs still follow the direct Azure execution path in the current backend
 
+### Portfolio demo paywall
+
+The paywall is a cost-control gate for audit runs, not a subscription system. Public pages and audit status polling remain open, but creating an audit can require paid or invite-granted credits.
+
+| Variable | Purpose |
+| --- | --- |
+| `PAYWALL_ENABLED` | Set to `true` to require credits before starting audits |
+| `STRIPE_SECRET_KEY` | Stripe secret key used to create and verify Checkout sessions |
+| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret for `/billing/webhook` |
+| `PUBLIC_SITE_URL` | Public app URL used for Stripe success and cancel redirects |
+| `BILLING_TOKEN_SECRET` | Secret used to sign browser-stored billing access tokens |
+| `BILLING_INVITE_CODES_JSON` | JSON object defining invite codes, credits, and redemption limits |
+| `PAYWALL_CREDIT_PACK_CENTS` | Checkout price in cents, defaults to `300` |
+| `PAYWALL_CREDIT_PACK_CREDITS` | Credits granted per paid pack, defaults to `3` |
+| `MAX_AUDIT_VIDEO_SECONDS` | Maximum uploaded video duration, defaults to `180` |
+| `BILLING_BLOB_CONTAINER` | Optional billing ledger container, defaults to `billing` |
+| `BILLING_BLOB_NAME` | Optional billing ledger blob, defaults to `portfolio-paywall-state.json` |
+
+Example invite code config:
+
+```json
+{
+  "RECRUITER-DEMO": {
+    "credits": 3,
+    "max_redemptions": 20
+  }
+}
+```
+
+Stripe should send `checkout.session.completed` events to:
+
+```text
+https://<webapp-name>.azurewebsites.net/billing/webhook
+```
+
 ### Frontend and backend integration
 
 | Variable | Purpose |
