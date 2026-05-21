@@ -298,3 +298,18 @@ class ApiServerTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("Client route shell", response.text)
+
+    def test_unknown_api_routes_do_not_fallback_to_frontend(self):
+        with TemporaryDirectory() as temp_dir:
+            dist_dir = Path(temp_dir)
+            (dist_dir / "index.html").write_text(
+                "<html><body>Frontend shell</body></html>",
+                encoding="utf-8",
+            )
+
+            with patch.object(server, "FRONTEND_DIST_DIR", dist_dir):
+                response = self.client.get("/billing/not-real")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "API route not found.")
+        self.assertNotIn("Frontend shell", response.text)

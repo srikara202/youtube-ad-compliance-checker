@@ -8,6 +8,7 @@ export default defineConfig({
     proxy: {
       "/audit": "http://127.0.0.1:8000",
       "/audits": "http://127.0.0.1:8000",
+      "/billing": "http://127.0.0.1:8000",
       "/health": "http://127.0.0.1:8000"
     }
   },

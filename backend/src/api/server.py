@@ -73,6 +73,7 @@ ALLOWED_UPLOAD_EXTENSIONS = {
     ".mpeg",
     ".mpg",
 }
+RESERVED_API_PATHS = {"audit", "audits", "billing", "health"}
 
 
 def get_frontend_origins() -> list[str]:
@@ -535,6 +536,14 @@ def resolve_frontend_asset(full_path: str) -> Path | None:
     return index_file if index_file.is_file() else None
 
 
+def is_reserved_api_path(full_path: str) -> bool:
+    requested_path = (full_path or "").strip("/")
+    if not requested_path:
+        return False
+    first_segment = requested_path.split("/", 1)[0]
+    return first_segment in RESERVED_API_PATHS
+
+
 @app.get("/health")
 def health_check():
     """
@@ -549,6 +558,9 @@ async def serve_frontend(full_path: str = ""):
     """
     Serves the built React app when frontend assets are available.
     """
+    if is_reserved_api_path(full_path):
+        raise HTTPException(status_code=404, detail="API route not found.")
+
     frontend_asset = resolve_frontend_asset(full_path)
     if frontend_asset is None:
         raise HTTPException(status_code=404, detail="Frontend application is not built.")
