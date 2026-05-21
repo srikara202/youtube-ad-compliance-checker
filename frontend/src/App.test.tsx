@@ -170,7 +170,7 @@ describe("App", () => {
   });
 
   it("redeems an invite code and updates the credit balance", async () => {
-    const fetchMock = vi.fn((url: string) => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
       if (url.endsWith("/billing/redeem")) {
         return Promise.resolve(
           jsonResponse({
@@ -180,6 +180,18 @@ describe("App", () => {
             config: BILLING_ENABLED_EMPTY.config
           })
         );
+      }
+      if (url.endsWith("/billing/me")) {
+        const authorization = new Headers(init?.headers).get("Authorization");
+        if (authorization === "Bearer access-token") {
+          return Promise.resolve(
+            jsonResponse({
+              email: "recruiter@example.com",
+              credits: 3,
+              config: BILLING_ENABLED_EMPTY.config
+            })
+          );
+        }
       }
       return Promise.resolve(jsonResponse(BILLING_ENABLED_EMPTY));
     });
@@ -193,7 +205,7 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: /use invite code/i }));
 
     expect(await screen.findByText(/invite code applied/i)).toBeInTheDocument();
-    expect(screen.getByText(/3 credits available/i)).toBeInTheDocument();
+    expect(await screen.findByText(/3 credits available/i)).toBeInTheDocument();
   });
 
   it("calculates credits from selected video duration", async () => {
