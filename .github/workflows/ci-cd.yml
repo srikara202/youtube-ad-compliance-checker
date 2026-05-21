@@ -115,15 +115,21 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy to Azure Web App
+        id: deploy
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
           package: webapp-package
+          clean: true
+          restart: true
 
       - name: Smoke test deployed billing API
         run: |
           set -euo pipefail
-          app_url="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+          app_url="${{ steps.deploy.outputs.webapp-url }}"
+          if [ -z "$app_url" ]; then
+            app_url="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+          fi
           for attempt in {1..30}; do
             openapi="$(curl -fsS "$app_url/openapi.json" || true)"
             if grep -q '"/billing/me"' <<< "$openapi"; then
@@ -134,5 +140,7 @@ jobs:
             echo "Waiting for the deployed billing API to become live (attempt ${attempt}/30)."
             sleep 10
           done
+          echo "Final deployed health response:"
+          curl -fsS "$app_url/health" || true
           echo "::error::The configured Azure Web App did not expose /billing/me after deployment."
           exit 1
