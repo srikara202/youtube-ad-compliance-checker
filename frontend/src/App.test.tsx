@@ -145,6 +145,9 @@ describe("App", () => {
     const file = new File(["video-data"], "ad.mp4", { type: "video/mp4" });
 
     await user.upload(screen.getByLabelText(/video file/i), file);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /run audit/i })).not.toBeDisabled();
+    });
     await user.click(screen.getByRole("button", { name: /run audit/i }));
 
     expect(await screen.findByText("Ad")).toBeInTheDocument();
@@ -159,6 +162,37 @@ describe("App", () => {
     expect(requestUrl).toMatch(/\/audits\/upload$/);
     expect(requestInit?.method).toBe("POST");
     expect(requestInit?.body).toBeInstanceOf(FormData);
+  });
+
+  it("keeps submit disabled while billing status is loading", async () => {
+    let resolveBilling!: (response: Response) => void;
+    const billingPromise = new Promise<Response>((resolve) => {
+      resolveBilling = resolve;
+    });
+    const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+      if (url.endsWith("/billing/me")) {
+        return billingPromise;
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp();
+    const user = userEvent.setup();
+    const file = new File(["video-data"], "ad.mp4", { type: "video/mp4" });
+
+    await user.upload(screen.getByLabelText(/video file/i), file);
+    const checkingButton = screen.getByRole("button", { name: /checking access/i });
+    expect(checkingButton).toBeDisabled();
+
+    await user.click(checkingButton);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/audits/upload"))).toBe(false);
+
+    resolveBilling(jsonResponse(BILLING_DISABLED));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /run audit/i })).not.toBeDisabled();
+    });
   });
 
   it("shows the portfolio paywall copy and invite controls", async () => {
@@ -353,6 +387,9 @@ describe("App", () => {
     const file = new File(["video-data"], "ad.mp4", { type: "video/mp4" });
 
     await user.upload(screen.getByLabelText(/video file/i), file);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /run audit/i })).not.toBeDisabled();
+    });
     await user.click(screen.getByRole("button", { name: /run audit/i }));
 
     expect(await screen.findByText(/video indexing failed in azure/i)).toBeInTheDocument();

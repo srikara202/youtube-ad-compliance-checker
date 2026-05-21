@@ -78,6 +78,7 @@ export default function App() {
     retry: false
   });
 
+  const billingStatusReady = billingQuery.isSuccess;
   const paywallConfig = billingQuery.data?.config;
   const paywallEnabled = paywallConfig?.enabled ?? false;
   const billingLocked = billingQuery.isError;
@@ -194,9 +195,15 @@ export default function App() {
   const issues = audit?.result?.compliance_results ?? [];
   const canSubmit =
     Boolean(uploadFile) &&
+    billingStatusReady &&
     !createAuditMutation.isPending &&
     !billingLocked &&
     (!paywallEnabled || (!durationError && Boolean(billingToken) && hasEnoughCredits));
+  const submitButtonLabel = createAuditMutation.isPending
+    ? "Starting audit..."
+    : uploadFile && billingQuery.isPending
+      ? "Checking access..."
+      : "Run audit";
 
   function resetPendingAudit() {
     setSeedAudit(null);
@@ -355,9 +362,6 @@ export default function App() {
                 ) : null}
 
                 {billingMessage ? <p className="inline-note">{billingMessage}</p> : null}
-                {billingQuery.isError ? (
-                  <p className="inline-error">Could not load credit status. Audit runs are locked for now.</p>
-                ) : null}
               </div>
             </section>
           ) : null}
@@ -383,7 +387,7 @@ export default function App() {
                 onChange={handleUploadChange}
               />
               <button className="primary-button" type="submit" disabled={createAuditMutation.isPending || !canSubmit}>
-                {createAuditMutation.isPending ? "Starting audit..." : "Run audit"}
+                {submitButtonLabel}
               </button>
             </div>
 
@@ -401,6 +405,9 @@ export default function App() {
             </div>
 
             {paywallEnabled && durationError ? <p className="inline-error">{durationError}</p> : null}
+            {billingQuery.isError ? (
+              <p className="inline-error">Could not load credit status. Audit runs are locked for now.</p>
+            ) : null}
             {formError ? <p className="inline-error">{formError}</p> : null}
           </form>
         </section>
