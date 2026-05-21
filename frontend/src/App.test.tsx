@@ -107,7 +107,7 @@ describe("App", () => {
   });
 
   it("submits uploads through the multipart endpoint", async () => {
-    const fetchMock = vi.fn((url: string) => {
+    const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
       if (url.endsWith("/billing/me")) {
         return Promise.resolve(jsonResponse(BILLING_DISABLED));
       }
@@ -152,10 +152,13 @@ describe("App", () => {
 
     const uploadCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/audits/upload"));
     expect(uploadCall).toBeTruthy();
-    const [requestUrl, requestInit] = uploadCall as [string, RequestInit];
+    if (!uploadCall) {
+      throw new Error("Expected an upload request.");
+    }
+    const [requestUrl, requestInit] = uploadCall;
     expect(requestUrl).toMatch(/\/audits\/upload$/);
-    expect(requestInit.method).toBe("POST");
-    expect(requestInit.body).toBeInstanceOf(FormData);
+    expect(requestInit?.method).toBe("POST");
+    expect(requestInit?.body).toBeInstanceOf(FormData);
   });
 
   it("shows the portfolio paywall copy and invite controls", async () => {
@@ -235,7 +238,7 @@ describe("App", () => {
   it("sends the access token and declared duration with paywalled uploads", async () => {
     window.localStorage.setItem("portfolio-demo-billing-token", "access-token");
     mockVideoDuration(75);
-    const fetchMock = vi.fn((url: string) => {
+    const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
       if (url.endsWith("/billing/me")) {
         return Promise.resolve(
           jsonResponse({
@@ -285,9 +288,14 @@ describe("App", () => {
     await screen.findByText("Ad");
     const uploadCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/audits/upload"));
     expect(uploadCall).toBeTruthy();
-    const [, requestInit] = uploadCall as [string, RequestInit];
-    expect(new Headers(requestInit.headers).get("Authorization")).toBe("Bearer access-token");
-    expect((requestInit.body as FormData).get("declared_duration_seconds")).toBe("75");
+    if (!uploadCall) {
+      throw new Error("Expected an upload request.");
+    }
+    const [, requestInit] = uploadCall;
+    const body = requestInit?.body instanceof FormData ? requestInit.body : null;
+    expect(new Headers(requestInit?.headers).get("Authorization")).toBe("Bearer access-token");
+    expect(body).toBeInstanceOf(FormData);
+    expect(body?.get("declared_duration_seconds")).toBe("75");
   });
 
   it("shows a failed audit state when the backend returns an error", async () => {
