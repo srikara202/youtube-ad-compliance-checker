@@ -127,8 +127,8 @@ if (-not $VideoIndexerAccountName -and $envMap.ContainsKey("AZURE_VI_NAME")) {
     $VideoIndexerAccountName = $envMap["AZURE_VI_NAME"]
 }
 
-$appSettings.Add("SCM_DO_BUILD_DURING_DEPLOYMENT=true")
-$appSettings.Add("ENABLE_ORYX_BUILD=true")
+$appSettings.Add("SCM_DO_BUILD_DURING_DEPLOYMENT=false")
+$appSettings.Add("ENABLE_ORYX_BUILD=false")
 if (-not $envMap.ContainsKey("AUDIT_JOB_STORE")) {
     $appSettings.Add("AUDIT_JOB_STORE=azure_blob")
 }

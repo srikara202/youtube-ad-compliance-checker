@@ -114,28 +114,76 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy to Azure Web App
-        id: deploy
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
-          package: webapp-package
-          clean: true
-          restart: true
+      - name: Resolve Azure Web App
+        id: webapp
+        run: |
+          set -euo pipefail
+          app_name="${{ secrets.AZURE_WEBAPP_NAME }}"
+          resource_group="$(az webapp list --query "[?name=='${app_name}'].resourceGroup | [0]" --output tsv)"
+          if [ -z "$resource_group" ] || [ "$resource_group" = "null" ]; then
+            echo "::error::Could not find the configured Azure Web App."
+            exit 1
+          fi
+          default_host="$(az webapp show --resource-group "$resource_group" --name "$app_name" --query defaultHostName --output tsv)"
+          echo "resource-group=${resource_group}" >> "$GITHUB_OUTPUT"
+          echo "url=https://${default_host}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure App Service for prebuilt package deploy
+        run: |
+          set -euo pipefail
+          app_name="${{ secrets.AZURE_WEBAPP_NAME }}"
+          resource_group="${{ steps.webapp.outputs.resource-group }}"
+          az webapp config set \
+            --resource-group "$resource_group" \
+            --name "$app_name" \
+            --startup-file "bash startup.sh" \
+            --output none
+          az webapp config appsettings set \
+            --resource-group "$resource_group" \
+            --name "$app_name" \
+            --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false ENABLE_ORYX_BUILD=false \
+            --output none
+          az webapp config appsettings delete \
+            --resource-group "$resource_group" \
+            --name "$app_name" \
+            --setting-names WEBSITE_RUN_FROM_PACKAGE \
+            --output none || true
+
+      - name: Create zip deployment package
+        run: |
+          set -euo pipefail
+          (cd webapp-package && zip -rq ../webapp-package.zip .)
+          unzip -l webapp-package.zip | grep -E 'deployment-info.json|backend/src/api/billing.py|backend/src/api/server.py'
+
+      - name: Deploy prebuilt zip package to Azure Web App
+        run: |
+          set -euo pipefail
+          app_name="${{ secrets.AZURE_WEBAPP_NAME }}"
+          resource_group="${{ steps.webapp.outputs.resource-group }}"
+          az webapp deploy \
+            --resource-group "$resource_group" \
+            --name "$app_name" \
+            --src-path webapp-package.zip \
+            --type zip \
+            --clean true \
+            --restart true \
+            --track-status true \
+            --timeout 900000
+          az webapp restart --resource-group "$resource_group" --name "$app_name" --output none
 
       - name: Smoke test deployed billing API
         run: |
           set -euo pipefail
-          app_url="${{ steps.deploy.outputs.webapp-url }}"
-          if [ -z "$app_url" ]; then
-            app_url="https://${{ secrets.AZURE_WEBAPP_NAME }}.azurewebsites.net"
-          fi
+          app_url="${{ steps.webapp.outputs.url }}"
           for attempt in {1..30}; do
             openapi="$(curl -fsS "$app_url/openapi.json" || true)"
             if grep -q '"/billing/me"' <<< "$openapi"; then
-              echo "Billing API is live on the configured Azure Web App."
-              curl -fsS "$app_url/health"
-              exit 0
+              health="$(curl -fsS "$app_url/health" || true)"
+              if grep -q "${GITHUB_SHA}" <<< "$health"; then
+                echo "Billing API and deployment metadata are live on the configured Azure Web App."
+                echo "$health"
+                exit 0
+              fi
             fi
             echo "Waiting for the deployed billing API to become live (attempt ${attempt}/30)."
             sleep 10
