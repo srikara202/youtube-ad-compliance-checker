@@ -82,6 +82,7 @@ export default function App() {
   const paywallConfig = billingQuery.data?.config;
   const paywallEnabled = paywallConfig?.enabled ?? false;
   const billingLocked = billingQuery.isError;
+  const showAccessPanel = paywallEnabled || billingLocked;
   const availableCredits = billingQuery.data?.credits ?? 0;
   const creditSeconds = paywallConfig?.credit_seconds ?? 60;
   const maxVideoSeconds = paywallConfig?.max_video_seconds ?? 180;
@@ -300,16 +301,23 @@ export default function App() {
             </div>
           </div>
 
-          {paywallEnabled ? (
+          {showAccessPanel ? (
             <section className="access-panel" aria-label="Demo access">
               <div className="access-copy">
                 <p className="hero-callout-label">Portfolio demo access</p>
                 <h2>Credits only cover cloud processing costs.</h2>
-                <p>
-                  This is not a commercial product. Each audit uses paid Azure services, so credits
-                  keep random traffic from creating surprise cloud bills. Recruiters and evaluators
-                  can use an invite code if I have shared one with them.
-                </p>
+                {billingLocked ? (
+                  <p>
+                    Billing status could not be loaded from the backend. Check paywall environment
+                    variables and redeploy, then refresh this page.
+                  </p>
+                ) : (
+                  <p>
+                    This is not a commercial product. Each audit uses paid Azure services, so credits
+                    keep random traffic from creating surprise cloud bills. Recruiters and evaluators
+                    can use an invite code if I have shared one with them.
+                  </p>
+                )}
               </div>
 
               <div className="access-controls">
@@ -329,7 +337,7 @@ export default function App() {
                   <button
                     className="secondary-button"
                     type="button"
-                    disabled={!billingEmail || checkoutMutation.isPending}
+                    disabled={!billingEmail || checkoutMutation.isPending || billingLocked}
                     onClick={handleCheckout}
                   >
                     {checkoutMutation.isPending
@@ -341,7 +349,7 @@ export default function App() {
                   <span className="credit-balance">{availableCredits} credits available</span>
                 </div>
 
-                {paywallConfig?.invite_enabled ? (
+                {(paywallConfig?.invite_enabled ?? true) ? (
                   <div className="invite-row">
                     <input
                       className="url-input"
@@ -353,7 +361,7 @@ export default function App() {
                     <button
                       className="secondary-button secondary-button-muted"
                       type="button"
-                      disabled={!billingEmail || !inviteCode || redeemMutation.isPending}
+                      disabled={!billingEmail || !inviteCode || redeemMutation.isPending || billingLocked}
                       onClick={handleRedeemInvite}
                     >
                       {redeemMutation.isPending ? "Applying..." : "Use invite code"}

@@ -219,8 +219,8 @@ def save_uploaded_media(file: UploadFile) -> Path:
         return Path(temp_file.name)
 
 
-def paywall_config_response() -> PaywallConfigResponse:
-    settings = get_paywall_settings()
+def paywall_config_response(settings=None) -> PaywallConfigResponse:
+    settings = settings or get_paywall_settings()
     return PaywallConfigResponse(
         enabled=settings.enabled,
         pack_credits=settings.pack_credits,
@@ -294,8 +294,11 @@ def resolve_upload_credits(declared_duration_seconds: float | None) -> int:
 
 @app.get("/billing/me", response_model=BillingMeResponse)
 async def get_billing_me(authorization: Optional[str] = Header(default=None)):
-    settings = get_paywall_settings()
-    config = paywall_config_response()
+    try:
+        settings = get_paywall_settings()
+        config = paywall_config_response(settings)
+    except BillingConfigurationError as exc:
+        raise billing_http_exception(exc) from exc
     if not settings.enabled:
         return BillingMeResponse(email=None, credits=0, config=config)
 
@@ -335,10 +338,9 @@ async def claim_billing_checkout(request: BillingClaimCheckoutRequest):
         checkout_session = retrieve_stripe_checkout_session(request.session_id)
         account = grant_checkout_credits(checkout_session)
         email = account["email"]
+        return billing_access_response(email, account["credits"])
     except (BillingAuthError, BillingConfigurationError) as exc:
         raise billing_http_exception(exc) from exc
-
-    return billing_access_response(email, account["credits"])
 
 
 @app.post("/billing/redeem", response_model=BillingAccessResponse)
@@ -353,13 +355,12 @@ async def redeem_billing_invite(request: BillingRedeemRequest):
         if invite_config is None:
             raise InviteCodeError("That invite code is not valid.")
         account = get_billing_store().redeem_invite(email, code, invite_config)
+        return billing_access_response(email, account["credits"])
     except (ValueError, BillingAuthError, BillingConfigurationError, InviteCodeError) as exc:
         raise billing_http_exception(exc) if isinstance(exc, BillingError) else HTTPException(
             status_code=400,
             detail=str(exc),
         ) from exc
-
-    return billing_access_response(email, account["credits"])
 
 
 @app.post("/billing/webhook")

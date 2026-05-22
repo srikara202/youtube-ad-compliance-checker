@@ -68,6 +68,14 @@ def parse_bool(value: str | None, *, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def parse_int_setting(name: str, default_value: str) -> int:
+    raw_value = os.getenv(name, default_value)
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise BillingConfigurationError(f"{name} must be an integer.") from exc
+
+
 @dataclass(frozen=True)
 class InviteCodeConfig:
     credits: int
@@ -91,10 +99,10 @@ class PaywallSettings:
 
 def get_paywall_settings() -> PaywallSettings:
     enabled = parse_bool(os.getenv("PAYWALL_ENABLED"), default=False)
-    pack_cents = int(os.getenv("PAYWALL_CREDIT_PACK_CENTS", "300"))
-    pack_credits = int(os.getenv("PAYWALL_CREDIT_PACK_CREDITS", "3"))
-    max_seconds = int(os.getenv("MAX_AUDIT_VIDEO_SECONDS", "180"))
-    credit_seconds = int(os.getenv("PAYWALL_CREDIT_SECONDS", "60"))
+    pack_cents = parse_int_setting("PAYWALL_CREDIT_PACK_CENTS", "300")
+    pack_credits = parse_int_setting("PAYWALL_CREDIT_PACK_CREDITS", "3")
+    max_seconds = parse_int_setting("MAX_AUDIT_VIDEO_SECONDS", "180")
+    credit_seconds = parse_int_setting("PAYWALL_CREDIT_SECONDS", "60")
 
     token_secret = os.getenv("BILLING_TOKEN_SECRET", "").strip()
     stripe_secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
@@ -102,15 +110,10 @@ def get_paywall_settings() -> PaywallSettings:
     public_site_url = os.getenv("PUBLIC_SITE_URL", "http://localhost:5173").strip().rstrip("/")
     stripe_api_base_url = os.getenv("STRIPE_API_BASE_URL", DEFAULT_STRIPE_API_BASE_URL).strip().rstrip("/")
 
-    if enabled:
-        if not token_secret:
-            raise BillingConfigurationError("BILLING_TOKEN_SECRET is required when PAYWALL_ENABLED=true.")
-        if not stripe_secret_key:
-            raise BillingConfigurationError("STRIPE_SECRET_KEY is required when PAYWALL_ENABLED=true.")
-        if pack_cents <= 0 or pack_credits <= 0:
-            raise BillingConfigurationError("Credit pack price and credit count must be positive.")
-        if max_seconds <= 0 or credit_seconds <= 0:
-            raise BillingConfigurationError("Audit video limits must be positive.")
+    if enabled and (pack_cents <= 0 or pack_credits <= 0):
+        raise BillingConfigurationError("Credit pack price and credit count must be positive.")
+    if enabled and (max_seconds <= 0 or credit_seconds <= 0):
+        raise BillingConfigurationError("Audit video limits must be positive.")
 
     return PaywallSettings(
         enabled=enabled,
@@ -454,10 +457,19 @@ def get_billing_store() -> BillingStore:
     return _billing_store
 
 
+def ensure_token_secret(settings: PaywallSettings) -> None:
+    if not settings.token_secret:
+        raise BillingConfigurationError("BILLING_TOKEN_SECRET is required when PAYWALL_ENABLED=true.")
+
+
+def ensure_stripe_secret(settings: PaywallSettings) -> None:
+    if not settings.stripe_secret_key:
+        raise BillingConfigurationError("STRIPE_SECRET_KEY is required when PAYWALL_ENABLED=true.")
+
+
 def create_billing_token(email: str, settings: PaywallSettings | None = None) -> str:
     settings = settings or get_paywall_settings()
-    if not settings.token_secret:
-        raise BillingConfigurationError("BILLING_TOKEN_SECRET is required to create access tokens.")
+    ensure_token_secret(settings)
     now = int(time.time())
     payload = {
         "sub": email,
@@ -470,6 +482,7 @@ def create_billing_token(email: str, settings: PaywallSettings | None = None) ->
 
 def decode_billing_token(token: str, settings: PaywallSettings | None = None) -> str:
     settings = settings or get_paywall_settings()
+    ensure_token_secret(settings)
     try:
         payload = jwt.decode(token, settings.token_secret, algorithms=["HS256"])
     except jwt.PyJWTError as exc:
@@ -534,28 +547,35 @@ def create_stripe_checkout_session(email: str, settings: PaywallSettings | None 
     settings = settings or get_paywall_settings()
     if not settings.enabled:
         raise BillingConfigurationError("The paywall is not enabled.")
+    ensure_stripe_secret(settings)
+    if not settings.public_site_url:
+        raise BillingConfigurationError("PUBLIC_SITE_URL is required when PAYWALL_ENABLED=true.")
 
     success_url = f"{settings.public_site_url}/?checkout_session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{settings.public_site_url}/"
-    response = requests.post(
-        f"{settings.stripe_api_base_url}/v1/checkout/sessions",
-        auth=(settings.stripe_secret_key, ""),
-        data={
-            "mode": "payment",
-            "success_url": success_url,
-            "cancel_url": cancel_url,
-            "customer_email": email,
-            "client_reference_id": email,
-            "metadata[email]": email,
-            "metadata[credits]": str(settings.pack_credits),
-            "metadata[purpose]": "portfolio_audit_credits",
-            "line_items[0][quantity]": "1",
-            "line_items[0][price_data][currency]": "usd",
-            "line_items[0][price_data][unit_amount]": str(settings.pack_cents),
-            "line_items[0][price_data][product_data][name]": "Portfolio demo audit credits",
-        },
-        timeout=20,
-    )
+    try:
+        response = requests.post(
+            f"{settings.stripe_api_base_url}/v1/checkout/sessions",
+            auth=(settings.stripe_secret_key, ""),
+            data={
+                "mode": "payment",
+                "success_url": success_url,
+                "cancel_url": cancel_url,
+                "customer_email": email,
+                "client_reference_id": email,
+                "metadata[email]": email,
+                "metadata[credits]": str(settings.pack_credits),
+                "metadata[purpose]": "portfolio_audit_credits",
+                "line_items[0][quantity]": "1",
+                "line_items[0][price_data][currency]": "usd",
+                "line_items[0][price_data][unit_amount]": str(settings.pack_cents),
+                "line_items[0][price_data][product_data][name]": "Portfolio demo audit credits",
+            },
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        logger.error("Stripe checkout session request failed: %s", str(exc))
+        raise BillingConfigurationError("Could not reach Stripe to create a checkout session.") from exc
     if response.status_code >= 400:
         logger.error("Stripe checkout session creation failed: %s", response.text)
         raise BillingConfigurationError("Could not create a Stripe Checkout session.")
@@ -567,11 +587,16 @@ def retrieve_stripe_checkout_session(
     settings: PaywallSettings | None = None,
 ) -> dict[str, Any]:
     settings = settings or get_paywall_settings()
-    response = requests.get(
-        f"{settings.stripe_api_base_url}/v1/checkout/sessions/{session_id}",
-        auth=(settings.stripe_secret_key, ""),
-        timeout=20,
-    )
+    ensure_stripe_secret(settings)
+    try:
+        response = requests.get(
+            f"{settings.stripe_api_base_url}/v1/checkout/sessions/{session_id}",
+            auth=(settings.stripe_secret_key, ""),
+            timeout=20,
+        )
+    except requests.RequestException as exc:
+        logger.error("Stripe checkout session lookup failed: %s", str(exc))
+        raise BillingAuthError("Could not verify that Stripe checkout session.") from exc
     if response.status_code >= 400:
         raise BillingAuthError("Could not verify that Stripe checkout session.")
     return response.json()
@@ -620,7 +645,10 @@ def verify_stripe_webhook_event(
     if not timestamp_values or not signatures:
         raise BillingAuthError("Invalid Stripe-Signature header.")
 
-    timestamp = int(timestamp_values[0])
+    try:
+        timestamp = int(timestamp_values[0])
+    except ValueError as exc:
+        raise BillingAuthError("Invalid Stripe-Signature header.") from exc
     if abs(time.time() - timestamp) > 300:
         raise BillingAuthError("Stripe webhook signature timestamp is too old.")
 
@@ -632,4 +660,7 @@ def verify_stripe_webhook_event(
     ).hexdigest()
     if not any(hmac.compare_digest(expected, signature) for signature in signatures):
         raise BillingAuthError("Stripe webhook signature verification failed.")
-    return json.loads(payload.decode("utf-8"))
+    try:
+        return json.loads(payload.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise BillingAuthError("Stripe webhook payload is not valid JSON.") from exc
