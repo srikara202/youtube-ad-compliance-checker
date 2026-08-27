@@ -11,6 +11,11 @@ wheels/
 .venv
 .env
 
+.claude/
+project-interview-trainer/
+tmp/
+
+
 # Frontend workspace
 frontend/node_modules/
 frontend/dist/

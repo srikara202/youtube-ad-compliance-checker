@@ -54,56 +54,37 @@ It runs as a single deployed Azure web app with a React front end, an async job 
 
 ## Architecture
 
+End to end, in plain terms:
+
 ```mermaid
 flowchart TB
-    subgraph client[Browser]
-        UI["React SPA<br/>polls job status every 3s via TanStack Query"]
+    YOU(["You give it an ad video —<br/>an upload or a link"])
+
+    APP["The web app, running in the Azure cloud<br/>takes the video, starts an audit,<br/>and shows progress in your browser"]
+
+    PAY["Credits and payments (Stripe)<br/>each audit costs credits, so strangers<br/>can't run up the cloud bill"]
+
+    HOME["A small computer at my home<br/>handles YouTube links, because YouTube<br/>blocks downloads from cloud datacenters"]
+
+    subgraph audit["The audit — the same three steps, wherever it runs"]
+        S1["Step 1 — Watch and listen<br/>Turn the video into text: the words spoken<br/>and the text shown on screen (Azure Video Indexer)"]
+        S2["Step 2 — Find the rules<br/>Pull the FTC and YouTube policy passages<br/>that apply to this ad (Azure AI Search)"]
+        S3["Step 3 — Judge<br/>The AI (GPT-4o) checks the ad<br/>against those exact rules"]
     end
 
-    subgraph appservice["Azure App Service (cloud)"]
-        API["FastAPI<br/>serves the API and the built SPA"]
-        BILL["Billing layer<br/>Stripe Checkout · JWT · credit ledger"]
-        GRAPH1["LangGraph workflow<br/>in-process for uploads + media URLs"]
-    end
+    RULES[("Official policy documents<br/>FTC endorsement guide + YouTube ad rules,<br/>loaded in once, ahead of time")]
 
-    subgraph shared["Azure Blob Storage"]
-        QUEUE[("Audit job records<br/>ETag optimistic concurrency")]
-        LEDGER[("Credit ledger")]
-    end
+    RESULT(["Pass or fail — every problem listed<br/>and explained, shown in your browser"])
 
-    subgraph local["Self-hosted worker (home network)"]
-        WORKER["Polls + claims YouTube jobs"]
-        GRAPH2["Same LangGraph workflow"]
-    end
-
-    subgraph azureai["Azure AI services"]
-        VI["Video Indexer<br/>transcript + OCR"]
-        EMB["Azure OpenAI embeddings"]
-        SEARCH[("Azure AI Search<br/>policy chunks")]
-        LLM["Azure OpenAI GPT-4o"]
-    end
-
-    STRIPE["Stripe"]
-    PDFS["Policy PDFs<br/>FTC guide · YouTube ad specs"]
-
-    UI -->|"POST /audits, /audits/upload"| API
-    UI -->|"GET /audits/:id"| API
-    API --> BILL
-    BILL <--> LEDGER
-    BILL <-->|"Checkout + signed webhook"| STRIPE
-    API -->|"create job"| QUEUE
-    API -->|"uploads / media URLs"| GRAPH1
-    QUEUE -.->|"YouTube jobs only"| WORKER
-    WORKER --> GRAPH2
-    GRAPH1 --> VI
-    GRAPH2 --> VI
-    GRAPH1 --> EMB
-    GRAPH2 --> EMB
-    VI --> EMB
-    EMB --> SEARCH
-    SEARCH --> LLM
-    LLM -->|"JSON verdict"| QUEUE
-    PDFS -->|"index_documents.py"| SEARCH
+    YOU --> APP
+    APP -.- PAY
+    APP -->|"uploads and direct links"| S1
+    APP -->|"YouTube links"| HOME
+    HOME --> S1
+    S1 --> S2
+    RULES -.-> S2
+    S2 --> S3
+    S3 --> RESULT
 ```
 
 The audit itself is a LangGraph state machine with two nodes and a typed state object ([`state.py`](backend/src/graph/state.py), [`workflow.py`](backend/src/graph/workflow.py)):
